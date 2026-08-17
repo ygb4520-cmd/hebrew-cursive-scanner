@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file: data:; style-src 'self' 'unsafe-inline';" />
+  <title>Hebrew Cursive Scanner</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <h1>Hebrew Cursive Scanner</h1>
+      <button id="settingsBtn" class="btn-secondary">⚙ Settings</button>
+    </header>
+
+    <div id="setupBanner" class="banner hidden">
+      <span id="setupBannerText"></span>
+      <button id="setupBannerBtn" class="btn-primary">Open Settings</button>
+    </div>
+
+    <main class="layout">
+      <aside class="notes-pane">
+        <div id="dropZone" class="drop-zone">
+          <p>Drag a photo here</p>
+          <p class="muted">or</p>
+          <button id="pickImageBtn" class="btn-primary">Choose Photo…</button>
+          <p id="importStatus" class="muted"></p>
+        </div>
+        <div class="notes-list-header">
+          <span>Notes</span>
+          <button id="refreshBtn" class="btn-secondary" title="Rescan sync folder">⟳</button>
+        </div>
+        <ul id="notesList" class="notes-list"></ul>
+      </aside>
+
+      <section class="detail-pane" id="detailPane">
+        <p class="muted placeholder">Select or create a note to see it here.</p>
+      </section>
+    </main>
+  </div>
+
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-content">
+      <h2>Settings</h2>
+
+      <label class="field-label" for="apiKeyInput">Gemini API key</label>
+      <p class="muted small">
+        Get a free key from Google AI Studio, then paste it here. It's encrypted and stored
+        only on this machine — never bundled with the app or sent anywhere except directly to Google's Gemini API.
+      </p>
+      <div class="row">
+        <input id="apiKeyInput" type="password" placeholder="Paste your Gemini API key" />
+        <button id="saveApiKeyBtn" class="btn-primary">Save</button>
+      </div>
+      <p id="apiKeyStatus" class="status-line"></p>
+
+      <hr />
+
+      <label class="field-label">Cloud-synced notes folder</label>
+      <p class="muted small">
+        Choose a folder that lives inside Dropbox, Google Drive, or iCloud Drive on this
+        machine. Notes (photo + transcription) are saved there, and the same folder on your
+        other machine will pick them up once it syncs.
+      </p>
+      <p id="syncFolderPath" class="status-line">Not set</p>
+      <button id="chooseSyncFolderBtn" class="btn-primary">Choose Folder…</button>
+
+      <div class="modal-actions">
+        <button id="closeSettingsBtn" class="btn-secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>

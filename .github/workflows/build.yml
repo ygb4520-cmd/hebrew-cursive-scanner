@@ -1,0 +1,39 @@
+name: Build desktop app
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build:mac -- --publish=never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mac-app
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          if-no-files-found: error
+
+  build-win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npm run build:win -- --publish=never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-app
+          path: dist/*.exe
+          if-no-files-found: error
