@@ -113,3 +113,37 @@ git push -u origin main
 ```
 
 Repo: https://github.com/ygb4520-cmd/hebrew-cursive-scanner
+
+### Live end-to-end test (Gemini key + Google Drive sync + first real note)
+
+- User (under 18) could not create the Gemini API key personally (Google's Generative AI
+  terms require being of legal age / guardian consent); a parent/guardian created the key
+  instead and handed it to the user to paste into the app's own Settings screen.
+- Google Drive for desktop was not yet installed on this Mac; walked the user through
+  installing it (standard macOS .pkg installer, admin password required — normal, not
+  Drive-specific) and signing in. Confirmed folder appeared at
+  `~/Library/CloudStorage/GoogleDrive-ygb4520@gmail.com/`.
+- In-app Settings: saved API key (encrypted via safeStorage) and set sync folder to
+  `.../My Drive/Notes`.
+- First transcription attempt failed: `Gemini API error (400): API key not valid.` — turned
+  out to be a bad copy/paste; re-copied via AI Studio's copy-icon and re-saved, fixed.
+- Second attempt failed: `Gemini API error (404): This model models/gemini-2.5-flash is no
+  longer available to new users... use the Interactions API` — Google deprecated
+  `gemini-2.5-flash` for newly-created API keys sometime after this app was first built.
+  Looked up current docs (ai.google.dev/gemini-api/docs/{migrate-to-interactions,models}):
+  confirmed the old `generateContent` REST endpoint is still fully supported (no rewrite
+  needed), just switched `MODEL_NAME` in `src/main/gemini.js` to `gemini-3.6-flash`.
+
+```bash
+pkill -f "Electron.app/Contents/MacOS/Electron"   # stop the running dev instance
+cd "/Users/tziporabrownstein/claude apps/hebrew-cursive-scanner"
+npm start                                          # relaunch with the model fix
+
+git add -A
+git commit -m "Fix: update to gemini-3.6-flash (gemini-2.5-flash deprecated for new API keys)"
+git push
+# -> f6b2907..83e9a08  main -> main
+```
+
+- Retried transcription: succeeded. Verified on disk that the note saved correctly:
+  `.../My Drive/Notes/HebrewCursiveScannerNotes/notes/<id>/{photo.jpg,meta.json}`.
