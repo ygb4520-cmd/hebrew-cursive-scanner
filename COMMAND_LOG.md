@@ -82,3 +82,34 @@ npm run build:mac -- --publish=never
 # -> local test build succeeded: dist/Hebrew Cursive Scanner-0.1.0-arm64.dmg (99.9 MB)
 #    validates the electron-builder config before pushing to GitHub Actions CI
 ```
+
+### GitHub push
+
+User created account `ygb4520-cmd` and repo `hebrew-cursive-scanner` (private) via the
+GitHub web UI. Installed `gh` CLI locally (no sudo) to authenticate without ever handling
+the user's password/token directly — used browser device-code login (`gh auth login --web`),
+which the user approved in their own browser.
+
+```bash
+mkdir -p ~/.local/bin
+curl -sL -o /tmp/gh.zip "https://github.com/cli/cli/releases/download/v2.97.0/gh_2.97.0_macOS_arm64.zip"
+unzip -q -o /tmp/gh.zip -d ~/.local/gh-extract
+cp ~/.local/gh-extract/gh_2.97.0_macOS_arm64/bin/gh ~/.local/bin/gh
+
+printf '\n' | ~/.local/bin/gh auth login --hostname github.com --git-protocol https --web
+# user authorized device code BEAB-CEA3 in browser
+
+cd "/Users/tziporabrownstein/claude apps/hebrew-cursive-scanner"
+~/.local/bin/gh auth setup-git
+git push -u origin main
+# FAILED: "refusing to allow an OAuth App to create or update workflow
+#          `.github/workflows/build.yml` without `workflow` scope"
+
+printf '\n' | ~/.local/bin/gh auth refresh -h github.com -s workflow
+# user authorized device code 852A-C40B in browser
+
+git push -u origin main
+# -> succeeded: main -> main, tracking origin/main
+```
+
+Repo: https://github.com/ygb4520-cmd/hebrew-cursive-scanner

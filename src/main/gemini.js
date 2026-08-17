@@ -4,8 +4,11 @@
 // (כתב מרובע).
 
 // If a newer/renamed Gemini vision model becomes free-tier default in the
-// future, update MODEL_NAME here.
-const MODEL_NAME = 'gemini-2.5-flash';
+// future, update MODEL_NAME here. (gemini-2.5-flash was Google's default when
+// this app was first built, but is no longer available to newly-created API
+// keys as of mid/late 2026 — Google's error message points new keys to
+// gemini-3.x instead.)
+const MODEL_NAME = 'gemini-3.6-flash';
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 
 const TRANSCRIPTION_PROMPT = `You are transcribing a photo of a handwritten note in Hebrew cursive script (כתב יד עברי, "Hebrew script"/"stam-adjacent" everyday cursive), often informal and messy handwriting.
