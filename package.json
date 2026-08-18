@@ -45,7 +45,8 @@
       {
         "provider": "github",
         "owner": "ygb4520-cmd",
-        "repo": "hebrew-cursive-scanner"
+        "repo": "hebrew-cursive-scanner",
+        "releaseType": "release"
       }
     ]
   }
