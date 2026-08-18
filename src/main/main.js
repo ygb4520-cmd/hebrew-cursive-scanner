@@ -3,9 +3,10 @@ const path = require('path');
 
 const settingsStore = require('./store');
 const apiKeyStore = require('./apiKeyStore');
-const { isSupportedImage, loadImageForTranscription } = require('./imageUtils');
+const { isSupportedImage, loadImageForTranscription, prepareImagesForGemini } = require('./imageUtils');
 const gemini = require('./gemini');
 const notesStore = require('./notesStore');
+const updater = require('./updater');
 
 let mainWindow;
 
@@ -93,9 +94,10 @@ ipcMain.handle('note:create-from-file', async (_event, filePath) => {
     throw new Error('No Gemini API key is configured yet. Open Settings and paste your free API key first.');
   }
 
-  const { buffer, mimeType, storedExtension } = await loadImageForTranscription(filePath);
+  const { buffer, storedExtension } = await loadImageForTranscription(filePath);
+  const images = await prepareImagesForGemini(buffer);
   const apiKey = apiKeyStore.getApiKey();
-  const text = await gemini.transcribeHandwriting({ apiKey, imageBuffer: buffer, mimeType });
+  const text = await gemini.transcribeHandwriting({ apiKey, images });
 
   const note = notesStore.createNote(settings.syncFolderPath, {
     imageBuffer: buffer,
@@ -118,4 +120,30 @@ ipcMain.handle('notes:list', () => {
 
 ipcMain.handle('notes:reveal', (_event, filePath) => {
   shell.showItemInFolder(filePath);
+});
+
+ipcMain.handle('note:delete', async (_event, id) => {
+  const settings = settingsStore.readSettings();
+  const dir = notesStore.noteDir(settings.syncFolderPath, id);
+  // Send to the OS trash rather than permanently deleting, so it's
+  // recoverable if this was a mistake.
+  await shell.trashItem(dir);
+  return true;
+});
+
+// ---- IPC: self-update -------------------------------------------------------------
+
+ipcMain.handle('app:get-version', () => app.getVersion());
+
+ipcMain.handle('update:check', async () => {
+  try {
+    return await updater.checkForUpdate();
+  } catch {
+    return { available: false };
+  }
+});
+
+ipcMain.handle('update:apply', async (_event, assetUrl) => {
+  await updater.applyUpdate(assetUrl);
+  return true;
 });

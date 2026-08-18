@@ -1,6 +1,6 @@
 {
   "name": "hebrew-cursive-scanner",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Scan handwritten Hebrew cursive notes and transcribe them into block print using the Gemini API.",
   "main": "src/main/main.js",
   "author": "",
@@ -13,7 +13,8 @@
     "build:win": "electron-builder --win"
   },
   "dependencies": {
-    "heic-convert": "^2.1.0"
+    "heic-convert": "^2.1.0",
+    "sharp": "^0.35.3"
   },
   "devDependencies": {
     "electron": "^33.2.0",
@@ -30,7 +31,7 @@
       "package.json"
     ],
     "mac": {
-      "target": "dmg",
+      "target": ["dmg", "zip"],
       "category": "public.app-category.productivity"
     },
     "win": {
@@ -39,6 +40,13 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "ygb4520-cmd",
+        "repo": "hebrew-cursive-scanner"
+      }
+    ]
   }
 }

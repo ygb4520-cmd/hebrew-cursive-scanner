@@ -147,3 +147,40 @@ git push
 
 - Retried transcription: succeeded. Verified on disk that the note saved correctly:
   `.../My Drive/Notes/HebrewCursiveScannerNotes/notes/<id>/{photo.jpg,meta.json}`.
+
+### Session 2 (2026-08-18): accuracy tuning, delete, self-updater
+
+- User reported real transcription quality was poor on genuinely dense, fast, abbreviation-heavy
+  personal Talmud/halacha shorthand (verified by viewing the actual photo directly). Found a real
+  bug: identical photo run twice gave two different transcriptions (no temperature set → sampling
+  noise). Fixed: `generationConfig.temperature: 0` in `src/main/gemini.js`.
+- Rewrote `TRANSCRIPTION_PROMPT` to match the real material: fast rabbinic-shorthand study notes,
+  preserve genuinely mixed Hebrew/English verbatim (previously wrongly forced "Hebrew only"),
+  expect standard Talmudic abbreviations, watch for similar-looking Hebrew letter confusions.
+- Tried `gemini-3.1-pro-preview` for accuracy — hit `limit: 0` (not actually free-tier usable for
+  this key despite Google's pricing page). Tried `gemini-3.7-flash` — had real free quota, but
+  user judged its actual output worse than `gemini-3.6-flash` on their handwriting; reverted to
+  `gemini-3.6-flash` per user's live comparison.
+- Added `sharp`-based image preprocessing (`src/main/imageUtils.js`): contrast normalize + sharpen,
+  auto-trim of blank margins. Tried splitting the page into two overlapping halves to give dense
+  text more effective detail — reverted (doubled image tokens/quota use, user felt it was worse,
+  no clear win). Auto-trim kept (harmless no-op when there's no clean border to cut).
+- Added a "Delete Note" button (`src/renderer/renderer.js`, `src/main/notesStore.js`) — sends the
+  note folder to the OS trash via `shell.trashItem`, not a permanent delete, per the user's
+  standing "delete means trash" preference.
+- Made the repo public (was private) so the self-updater can hit the GitHub Releases API without
+  an embedded token:
+  ```bash
+  ~/.local/bin/gh repo edit ygb4520-cmd/hebrew-cursive-scanner --visibility public --accept-visibility-change-consequences
+  ```
+- Built a self-update feature (`src/main/updater.js`) instead of Electron's built-in autoUpdater,
+  since that needs a paid Apple code-signing cert to work reliably on Mac. Checks
+  `api.github.com/repos/.../releases/latest`, compares versions, downloads the right asset
+  (`.zip` on Mac, `.exe` on Windows), and installs it itself. Mac installs to `~/Applications`
+  (not the system-wide `/Applications`) since the user's account can't write there without an
+  admin password they don't have — confirmed live: `mv` into `/Applications` failed with
+  "Permission denied" for this account.
+- `package.json`: bumped version to 0.2.0, added `zip` target for mac (alongside `dmg`), added
+  `build.publish` (GitHub provider). `.github/workflows/build.yml`: tag pushes (`v*`) now also
+  run `electron-builder --publish=always` to create a real GitHub Release with the built
+  installers attached; plain branch pushes still just build artifacts as before.

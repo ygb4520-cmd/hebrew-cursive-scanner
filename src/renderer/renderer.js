@@ -17,9 +17,15 @@ const saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
 const apiKeyStatus = document.getElementById('apiKeyStatus');
 const syncFolderPathEl = document.getElementById('syncFolderPath');
 const chooseSyncFolderBtn = document.getElementById('chooseSyncFolderBtn');
+const appVersionLabel = document.getElementById('appVersionLabel');
+
+const updateBanner = document.getElementById('updateBanner');
+const updateBannerText = document.getElementById('updateBannerText');
+const updateBannerBtn = document.getElementById('updateBannerBtn');
 
 let notes = [];
 let activeNoteId = null;
+let pendingUpdate = null;
 
 // ---------------------------------------------------------------------------
 // Setup / settings
@@ -47,6 +53,8 @@ async function openSettings() {
   apiKeyInput.value = '';
   syncFolderPathEl.textContent = settings.syncFolderPath || 'Not set';
   settingsModal.classList.remove('hidden');
+  const version = await window.api.getAppVersion();
+  appVersionLabel.textContent = `v${version}`;
 }
 
 settingsBtn.addEventListener('click', openSettings);
@@ -182,6 +190,24 @@ function renderDetailPlaceholder() {
   detailPane.innerHTML = '<p class="muted placeholder">Select or create a note to see it here.</p>';
 }
 
+async function confirmDelete(id) {
+  const ok = window.confirm(
+    'Delete this note? It will be moved to the trash/recycle bin (recoverable), not permanently erased.'
+  );
+  if (!ok) return;
+
+  try {
+    await window.api.deleteNote(id);
+    if (activeNoteId === id) {
+      activeNoteId = null;
+      renderDetailPlaceholder();
+    }
+    await loadNotes();
+  } catch (err) {
+    alert(`Could not delete note: ${err.message}`);
+  }
+}
+
 function selectNote(id) {
   activeNoteId = id;
   renderNotesList();
@@ -231,8 +257,45 @@ function selectNote(id) {
   revealBtn.addEventListener('click', () => window.api.revealInFolder(note.photoPath));
   actions.appendChild(revealBtn);
 
+  const deleteBtn = document.createElement('button');
+  deleteBtn.className = 'btn-danger';
+  deleteBtn.textContent = 'Delete Note';
+  deleteBtn.addEventListener('click', () => confirmDelete(note.id));
+  actions.appendChild(deleteBtn);
+
   detailPane.appendChild(actions);
 }
+
+// ---------------------------------------------------------------------------
+// Self-update
+// ---------------------------------------------------------------------------
+
+async function checkForUpdate() {
+  try {
+    const result = await window.api.checkForUpdate();
+    if (result.available) {
+      pendingUpdate = result;
+      updateBannerText.textContent = `A new version (v${result.version}) is available.`;
+      updateBanner.classList.remove('hidden');
+    }
+  } catch {
+    // Offline or GitHub unreachable — fail silently, not worth bothering the user.
+  }
+}
+
+updateBannerBtn.addEventListener('click', async () => {
+  if (!pendingUpdate) return;
+  updateBannerBtn.disabled = true;
+  updateBannerText.textContent = `Downloading v${pendingUpdate.version}… the app will restart automatically.`;
+  try {
+    await window.api.applyUpdate(pendingUpdate.assetUrl);
+    // On success the main process quits this instance and relaunches the
+    // new one — nothing left to do here.
+  } catch (err) {
+    updateBannerBtn.disabled = false;
+    updateBannerText.textContent = `Update failed: ${err.message}`;
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Init
@@ -241,4 +304,5 @@ function selectNote(id) {
 (async function init() {
   await refreshSetupBanner();
   await loadNotes();
+  checkForUpdate();
 })();

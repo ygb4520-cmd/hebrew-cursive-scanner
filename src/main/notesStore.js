@@ -38,6 +38,12 @@ function ensureNotesRootDir(chosenFolderPath) {
   return dir;
 }
 
+// Path to a single note's folder — used by main.js to send it to the OS
+// trash (not a permanent delete) via Electron's shell.trashItem.
+function noteDir(chosenFolderPath, id) {
+  return path.join(notesRootDir(chosenFolderPath), id);
+}
+
 function listNotes(chosenFolderPath) {
   const dir = notesRootDir(chosenFolderPath);
   if (!fs.existsSync(dir)) return [];
@@ -94,4 +100,12 @@ function updateNoteText(chosenFolderPath, id, newText) {
   return meta;
 }
 
-module.exports = { listNotes, createNote, updateNoteText, notesRootDir, SyncFolderError, APP_SUBFOLDER };
+module.exports = {
+  listNotes,
+  createNote,
+  updateNoteText,
+  notesRootDir,
+  noteDir,
+  SyncFolderError,
+  APP_SUBFOLDER,
+};

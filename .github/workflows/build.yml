@@ -3,18 +3,31 @@ name: Build desktop app
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch: {}
 
 jobs:
   build-mac:
     runs-on: macos-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm ci
-      - run: npm run build:mac -- --publish=never
+      # Tag pushes (v1.2.3) publish a real GitHub Release with the built
+      # installers attached — that's what the in-app self-updater checks.
+      # Plain pushes to main just build artifacts for quick manual testing.
+      - name: Build and publish (tag push)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: npm run build:mac -- --publish=always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build only (branch push)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: npm run build:mac -- --publish=never
       - uses: actions/upload-artifact@v4
         with:
           name: mac-app
@@ -25,13 +38,22 @@ jobs:
 
   build-win:
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm ci
-      - run: npm run build:win -- --publish=never
+      - name: Build and publish (tag push)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: npm run build:win -- --publish=always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build only (branch push)
+        if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+        run: npm run build:win -- --publish=never
       - uses: actions/upload-artifact@v4
         with:
           name: windows-app

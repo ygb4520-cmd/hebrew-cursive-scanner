@@ -16,8 +16,13 @@ contextBridge.exposeInMainWorld('api', {
   updateNoteText: (id, text) => ipcRenderer.invoke('note:update-text', { id, text }),
   listNotes: () => ipcRenderer.invoke('notes:list'),
   revealInFolder: (filePath) => ipcRenderer.invoke('notes:reveal', filePath),
+  deleteNote: (id) => ipcRenderer.invoke('note:delete', id),
 
   // Needed to resolve a real filesystem path from a drag-and-dropped File
   // object (File.path was removed from the renderer in newer Electron).
   getPathForFile: (file) => webUtils.getPathForFile(file),
+
+  getAppVersion: () => ipcRenderer.invoke('app:get-version'),
+  checkForUpdate: () => ipcRenderer.invoke('update:check'),
+  applyUpdate: (assetUrl) => ipcRenderer.invoke('update:apply', assetUrl),
 });
