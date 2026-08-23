@@ -63,3 +63,7 @@ anyway"). This is expected for a free, personal-use build.
 Hosted backend/server, offline transcription, batch processing, mobile app,
 exceeding the free Gemini quota, real-time push sync (relies on your cloud
 provider's own sync + an on-open rescan instead).
+
+## Support / Feedback
+
+Found a bug or have a question? Open an issue: https://github.com/ygb4520-cmd/hebrew-cursive-scanner/issues
