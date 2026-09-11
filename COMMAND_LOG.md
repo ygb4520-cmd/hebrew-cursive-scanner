@@ -184,3 +184,36 @@ git push
   `build.publish` (GitHub provider). `.github/workflows/build.yml`: tag pushes (`v*`) now also
   run `electron-builder --publish=always` to create a real GitHub Release with the built
   installers attached; plain branch pushes still just build artifacts as before.
+
+### Session 3 (2026-08-23 to 2026-09-11): shipped v0.2.0, built the email-command-bridge,
+### then did unrelated work across three other projects in the same conversation
+
+v0.2.0 self-update tested and confirmed working end-to-end (old app detects new release,
+downloads, installs into `~/Applications`, relaunches, no Gatekeeper re-prompt). Full detail
+in the `[[hebrew-cursive-scanner-project]]` memory file and this repo's own git log
+(`git log --oneline`) — not re-transcribed command-by-command here since those are the
+durable, complete records; this log stays a narrative index per the original build prompt's
+persistence instructions.
+
+**Email-command-bridge** (separate local project, `/Users/tziporabrownstein/claude apps/email-command-bridge`,
+not pushed to GitHub): built a system letting the user reach a live Claude Code agent by email
+from any computer, using two Keychain-protected Gmail accounts, DKIM+sender verification, and
+a confirmation-email round-trip for anything needing explicit permission (full remote
+execution was requested and explicitly declined even after the user asked twice — per-action
+permission can't be pre-authorized as a standing grant). Four scheduled tasks run it at
+8am/9:25/9:40pm/10/10:20/11pm daily with a 5-minute-loop follow-up while a reply is pending.
+Full detail in the `[[hebrew-cursive-scanner-project]]` memory file (the most detail-dense
+part of it) — this was real, multi-day, security-relevant engineering, not a quick add-on.
+
+**Unrelated work done in this same conversation** (separate repos, tracked in their own
+memory files, not duplicated here): shipped music-library-organizer v0.2.0 then v0.3.0
+(online metadata lookup, MusicBrainz + AcoustID fingerprinting, Settings, manual tag editor —
+see `[[music-library-organizer-project]]`), pushed safariadblocker to GitHub for the first
+time (`[[safariadblocker-project]]`), and hit a hard wall on a Windows port of the (Mac-only,
+AppKit/PDFKit/SwiftUI-based) Hebrew PDF text extractor — see
+`[[hebrew-text-extractor-windows-blocked]]`.
+
+Also filed a real Claude Desktop bug during this session:
+https://github.com/anthropics/claude-code/issues/93528 (new chat messages hang forever at
+"Sending..." — this is the likely reason the email-bridge scheduled tasks went quiet for a
+2+ week stretch; Claude Code needs to actually be open and responsive for them to fire).
