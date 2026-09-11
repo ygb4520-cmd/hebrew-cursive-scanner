@@ -7,6 +7,20 @@ editable block-print Hebrew (כתב מרובע) using Google's Gemini API vision
 No hosted backend, no monthly cost. Notes sync between your machines via a
 folder you already have cloud-synced (Google Drive, in this setup).
 
+## Download
+
+1. Go to **[the latest release](https://github.com/ygb4520-cmd/hebrew-cursive-scanner/releases/latest)**.
+2. Scroll to **Assets** near the bottom of that page.
+3. Click the file for your computer:
+   - **Mac**: the `.dmg` file — open it once downloaded, then drag the app
+     into Applications. First launch: right-click the app → **Open** (it's
+     unsigned, so macOS needs that one-time confirmation — normal, not a bug).
+   - **Windows**: the `Setup...exe` file — run it. If SmartScreen warns
+     "Windows protected your PC," click **More info** → **Run anyway**
+     (same reason, unsigned build).
+4. Once installed, the app checks for updates itself and offers to install
+   them — no need to come back here for future versions.
+
 ## How it works
 
 - **Import**: drag a photo in, or use "Choose Photo…" (JPG/PNG/HEIC supported).
