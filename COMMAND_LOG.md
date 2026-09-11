@@ -188,14 +188,65 @@ git push
 ### Session 3 (2026-08-23 to 2026-09-11): shipped v0.2.0, built the email-command-bridge,
 ### then did unrelated work across three other projects in the same conversation
 
-v0.2.0 self-update tested and confirmed working end-to-end (old app detects new release,
-downloads, installs into `~/Applications`, relaunches, no Gatekeeper re-prompt). Full detail
-in the `[[hebrew-cursive-scanner-project]]` memory file and this repo's own git log
-(`git log --oneline`) — not re-transcribed command-by-command here since those are the
-durable, complete records; this log stays a narrative index per the original build prompt's
-persistence instructions.
+Commands actually executed this session, in order (per this repo's persistence instructions —
+a prior pass here wrongly substituted a narrative summary for this list; corrected):
 
-**Email-command-bridge** (separate local project, `/Users/tziporabrownstein/claude apps/email-command-bridge`,
+```bash
+# Diagnosing why 2 real emails from the user never got processed by the email-command-bridge
+cd "/Users/tziporabrownstein/claude apps/email-command-bridge"
+venv/bin/python3 check_commands.py
+python3 -c "import json; st=json.load(open('state.json')); print(st)"   # inspect processed-ids/UID cursor
+python3 -c "
+import imaplib
+from bridge import keychain
+pw = keychain.support_password()
+conn = imaplib.IMAP4_SSL('imap.gmail.com')
+conn.login('claudeappsupport@gmail.com', pw)
+conn.select('INBOX', readonly=True)
+status, data = conn.uid('search', None, 'FROM', 'ygb4520@gmail.com')
+print(data)
+"   # found 2 unprocessed messages ("music library orginizer", "github readmes")
+python3 -c "from bridge import verify; ..."   # ran is_verified_from() on both -> both failed DKIM
+python3 -c "
+import dkim, logging
+logging.basicConfig(level=logging.DEBUG)
+result = dkim.verify(raw_message_bytes, logger=logging.getLogger('dkim'))
+"   # dkimpy debug log revealed: "x= value is past" -- signature EXPIRED (Gmail's 7-day window),
+    # not spoofed -- messages had sat unprocessed >2 weeks
+
+# Fixed bridge/verify.py: pin process clock to the message's own t= (signing time) during
+# dkim.verify() only, so the crypto check still runs for real but the freshness *policy*
+# (irrelevant to this system's threat model) doesn't reject legitimately-late mail
+venv/bin/python3 -m py_compile bridge/verify.py
+venv/bin/python3 check_commands.py   # re-ran -> both messages now correctly surfaced as new_commands
+python3 -c "from bridge import mailbox; ..."   # sent the two real replies via send_reply.py
+venv/bin/python3 send_reply.py "Re: music library orginizer" "Yes, it's feasible, two ways: ..." "<message-id>"
+venv/bin/python3 send_reply.py "Re: github readmes" "Happy to -- just need a bit more to go on ..." "<message-id>"
+venv/bin/python3 check_commands.py   # final clean confirmation run
+
+# GitHub Desktop app bug report (unrelated to this repo's code, but diagnosed in this session)
+# -- fetched/researched via WebFetch/WebSearch, then filed:
+gh issue create --repo anthropics/claude-code \
+  --title "[BUG] Claude Desktop (Code tab, macOS) — new messages hang indefinitely at \"Sending...\", never transmit" \
+  --body-file /tmp/claude-desktop-bug-report.md
+  # -> https://github.com/anthropics/claude-code/issues/93528
+```
+
+Scheduled-task changes (via the `mcp__scheduled-tasks__*` tools, not shell commands, so not
+literal "commands" but logged here for completeness since they're config that governs when
+future runs happen): created `email-bridge-check-930/-10/-11` (3 tasks, later deleted),
+replaced with `email-bridge-check-8am`, `-925pm`, `-10pm`, `-11pm` (4 tasks, current) after the
+user specified exact times (8:00am, 9:25/9:40pm, 10:00/10:20pm, 11:00pm — cron can't express
+those 6 times as one expression, hence 4 tasks grouped by hour). Prompt logic iterated three
+times per the user's feedback: (1) first version looped up to 3x on any `new_commands`; (2)
+switched to a plain `sleep 300` + re-run loop instead of dynamically creating a new
+`fireAt` task each time, since calling `create_scheduled_task`/`update_scheduled_task`
+mid-run could itself need an unattended permission prompt; (3) final version loops only while
+`still_pending` shows genuine back-and-forth progress (a "quiet streak" counter, capped at 2
+quiet checks), always stopping if the next real scheduled slot is within 10 minutes.
+
+Full narrative detail on the email-command-bridge (separate local project,
+`/Users/tziporabrownstein/claude apps/email-command-bridge`,
 not pushed to GitHub): built a system letting the user reach a live Claude Code agent by email
 from any computer, using two Keychain-protected Gmail accounts, DKIM+sender verification, and
 a confirmation-email round-trip for anything needing explicit permission (full remote
@@ -205,15 +256,79 @@ permission can't be pre-authorized as a standing grant). Four scheduled tasks ru
 Full detail in the `[[hebrew-cursive-scanner-project]]` memory file (the most detail-dense
 part of it) — this was real, multi-day, security-relevant engineering, not a quick add-on.
 
-**Unrelated work done in this same conversation** (separate repos, tracked in their own
-memory files, not duplicated here): shipped music-library-organizer v0.2.0 then v0.3.0
-(online metadata lookup, MusicBrainz + AcoustID fingerprinting, Settings, manual tag editor —
-see `[[music-library-organizer-project]]`), pushed safariadblocker to GitHub for the first
-time (`[[safariadblocker-project]]`), and hit a hard wall on a Windows port of the (Mac-only,
-AppKit/PDFKit/SwiftUI-based) Hebrew PDF text extractor — see
-`[[hebrew-text-extractor-windows-blocked]]`.
+**Unrelated work done in this same conversation** (separate repos, own memory files —
+`[[music-library-organizer-project]]`, `[[safariadblocker-project]]`,
+`[[hebrew-text-extractor-windows-blocked]]` — narrative detail lives there; commands here):
+
+```bash
+# --- safariadblocker: first-time push to GitHub (pre-existing local project) ---
+cd "/Users/tziporabrownstein/claude apps/Extensions/safariadblocker"
+find . -maxdepth 1 -name ".gitignore"; cat .claude/settings.local.json; ls -la scripts/logs
+# wrote .gitignore (.claude/, scripts/logs/*.log, xcuserdata, the stale AdTrackerBlocker-Windows.zip)
+git init -q
+git add -A; git status --short   # 77 files staged, verified no logs/local-settings included
+git commit -q -m "Initial commit ..."
+~/.local/bin/gh repo create safariadblocker --public --source=. --remote=origin --push
+
+# --- music-library-organizer: this project's venv was broken (created pre folder-rename) ---
+cd "/Users/tziporabrownstein/claude apps/music-library-organizer"
+head -1 venv/bin/pip venv/bin/python3   # shebang pointed at the old "claude apps:extensions" path
+rm -rf venv
+python3 -m venv venv
+venv/bin/pip install --quiet -r requirements.txt pyacoustid
+
+# --- music-library-organizer: metadata-lookup feature (filename search via MusicBrainz) ---
+venv/bin/python3 -c "from organizer import metadata_lookup; print(metadata_lookup.search('Queen','Bohemian Rhapsody'))"
+venv/bin/python3 -c "... metadata_lookup.best_match(Path('.../The Beatles - Hey Jude.flac')) ..."
+# -> hit an uncaught socket.timeout (not a TimeoutError subclass on this Python 3.9); fixed
+# search()'s except clause to catch OSError broadly
+cp "/Users/tziporabrownstein/Downloads/Nova.mp3" "$SCRATCH/test-tag-write.mp3"   # disposable copy, never the original
+venv/bin/python3 -c "from organizer import tag_reader, tag_writer; ... write_tags(...) ... read_tags(...)"   # round-trip test
+rm "$SCRATCH/test-tag-write.mp3"
+# end-to-end pipeline test on a renamed+tag-stripped disposable copy ("Jeryko - Shadow.mp3"):
+venv/bin/python3 -c "
+from organizer import tag_reader; from organizer.models import MetadataSource
+from organizer.metadata_lookup import best_match; from organizer.tag_writer import write_tags
+... scan folder, find MetadataSource.NONE tracks, best_match(), write_tags(), re-read to confirm ...
+"
+# found + fixed: a transient MusicBrainz rate-limit response looked identical to "no match" --
+# added a retry with backoff in metadata_lookup.search()
+
+# --- music-library-organizer: audio-fingerprinting fallback (AcoustID + fpcalc) ---
+venv/bin/pip install --quiet pyacoustid
+curl -sL -o /tmp/fpcalc-mac.tar.gz "https://github.com/acoustid/chromaprint/releases/download/v1.6.1/chromaprint-fpcalc-1.6.1-macos-universal.tar.gz"
+curl -sL -o /tmp/fpcalc-win.zip "https://github.com/acoustid/chromaprint/releases/download/v1.6.1/chromaprint-fpcalc-1.6.1-windows-x86_64.zip"
+tar -xzf /tmp/fpcalc-mac.tar.gz -C /tmp; unzip -q -o /tmp/fpcalc-win.zip -d /tmp/fpcalc-win-extracted
+cp /tmp/chromaprint-fpcalc-1.6.1-macos-universal/fpcalc bin/mac/fpcalc; chmod +x bin/mac/fpcalc
+cp /tmp/fpcalc-win-extracted/.../fpcalc.exe bin/windows/fpcalc.exe
+xattr -l bin/mac/fpcalc; ./bin/mac/fpcalc -version   # confirmed no quarantine flag, runs fine
+venv/bin/python3 -c "import acoustid; from organizer.metadata_lookup import fpcalc_path; acoustid.fingerprint_file(...)"
+# live API test (user pasted her real AcoustID key into the app's own Settings dialog, not to me):
+venv/bin/python3 -c "from organizer.metadata_lookup import best_match; best_match(Path('.../xyz_garbled_9182.mp3'))"
+# -> None; confirmed genuine "no match" (not a broken key) by re-testing with an obviously
+# invalid key, which correctly raised WebServiceError instead of returning an empty list
+git add -A; git commit -q -m "Add Settings, manual tag editor, sorting, multi-artist handling, audio fingerprinting (v0.3.0)"
+git push
+git add -A; git commit -q -m "Apply multi-artist Settings preference to folder organization too"
+git push
+git tag v0.3.0; git push origin v0.3.0
+gh run watch <run-id> --repo ygb4520-cmd/music-library-organizer --exit-status
+gh release view v0.3.0 --repo ygb4520-cmd/music-library-organizer
+
+# --- verifying all three repos' README download instructions actually work ---
+curl -sL -o /dev/null -w "%{http_code} -> %{url_effective}\n" "https://github.com/ygb4520-cmd/hebrew-cursive-scanner/releases/latest"
+curl -s "https://api.github.com/repos/ygb4520-cmd/hebrew-cursive-scanner/releases/latest" | python3 -c "..."
+curl -sL -o /dev/null -w "%{http_code} -> %{url_effective}\n" "https://github.com/ygb4520-cmd/music-library-organizer/releases/latest"
+curl -s "https://api.github.com/repos/ygb4520-cmd/music-library-organizer/releases/latest" | python3 -c "..."
+ls -la ".../safariadblocker/WindowsExtension/README-WINDOWS.md"   # confirmed the linked file exists
+# then committed/pushed a "Download" section added to the top of all three READMEs
+```
 
 Also filed a real Claude Desktop bug during this session:
 https://github.com/anthropics/claude-code/issues/93528 (new chat messages hang forever at
 "Sending..." — this is the likely reason the email-bridge scheduled tasks went quiet for a
 2+ week stretch; Claude Code needs to actually be open and responsive for them to fire).
+
+Windows port of the Hebrew PDF text extractor: blocked, see
+`[[hebrew-text-extractor-windows-blocked]]` — the user has no current access to the Windows
+computer where the only copy of that project's source code lives.
