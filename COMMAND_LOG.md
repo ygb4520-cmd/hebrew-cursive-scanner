@@ -385,3 +385,25 @@ computer where the only copy of that project's source code lives.
 - User tested a real scanner-app PDF (vs. camera photo) after these fixes: "somewhat better,"
   a real but modest improvement.
 - Version bumped to 0.3.0 for this release.
+
+### Self-update bug found and fixed immediately after shipping v0.3.0
+
+- Real self-update test (v0.2.0 -> v0.3.0, actual installed app in ~/Applications) failed:
+  `ENOTDIR: not a directory, rmdir '.../Contents/Resources/app.asar'`. Root cause: the
+  original `applyMacUpdate` tried to `fs.rmSync` + `fs.cpSync` the app's own bundle
+  IN-PROCESS, while that exact process was still running from it -- Electron memory-maps
+  `app.asar`, so deleting/replacing it out from under the live process throws low-level fs
+  errors. This is the same class of constraint already correctly handled for Windows (a
+  running process can't overwrite its own .exe) but wasn't applied to the Mac path
+  originally -- a real gap, not a platform difference.
+- The failed rm partially deleted the bundle before erroring (`Contents/MacOS` was gone,
+  `Contents/Resources/app.asar` remained) -- confirmed by inspecting the installed app
+  directly. Had to manually reinstall a clean copy (`gh release download` the v0.3.0 zip,
+  extract, copy into `~/Applications`) since the broken bundle couldn't self-repair.
+- Fixed `applyMacUpdate` (src/main/updater.js) to match the Windows pattern properly: spawn
+  a detached bash helper that waits for this process's PID to fully exit, THEN does the
+  rm/cp/relaunch, instead of doing it in-process before quitting.
+- Version bumped to 0.3.1. Plan: verify by actually triggering a real v0.3.0 -> v0.3.1
+  self-update from the live installed app (not a synthetic test harness this time) before
+  considering this closed, given the last "verified" claim for this exact code path turned
+  out to be wrong.

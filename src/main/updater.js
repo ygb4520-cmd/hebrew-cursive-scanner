@@ -102,15 +102,29 @@ async function applyMacUpdate(assetUrl) {
   const userAppsDir = path.join(os.homedir(), 'Applications');
   fs.mkdirSync(userAppsDir, { recursive: true });
   const destApp = path.join(userAppsDir, appBundle);
+  const newAppSource = path.join(extractDir, appBundle);
 
-  if (fs.existsSync(destApp)) {
-    fs.rmSync(destApp, { recursive: true, force: true });
-  }
-  fs.cpSync(path.join(extractDir, appBundle), destApp, { recursive: true });
+  // Can't delete/replace our own running app bundle in-process -- Electron
+  // memory-maps app.asar, so rm/cp on it while still running throws odd
+  // low-level fs errors (confirmed live: ENOTDIR on app.asar). Same
+  // constraint as Windows not letting a process overwrite its own .exe,
+  // just a different failure mode. Spawn a detached helper that waits for
+  // this process to fully exit, then swaps the bundle and relaunches.
+  const helperPath = path.join(tmpDir, 'apply_update.sh');
+  const helperScript = `#!/bin/bash
+while kill -0 ${process.pid} 2>/dev/null; do
+  sleep 0.5
+done
+rm -rf "${destApp}"
+cp -R "${newAppSource}" "${destApp}"
+open -n "${destApp}"
+rm -rf "${tmpDir}"
+`;
+  fs.writeFileSync(helperPath, helperScript, { mode: 0o755 });
 
-  // Relaunch the new copy, then quit this one.
-  execFile('/usr/bin/open', ['-n', destApp]);
-  setTimeout(() => app.quit(), 500);
+  const child = execFile('/bin/bash', [helperPath], { detached: true, stdio: 'ignore' });
+  child.unref();
+  setTimeout(() => app.quit(), 300);
 }
 
 async function applyWindowsUpdate(assetUrl) {
