@@ -332,3 +332,56 @@ https://github.com/anthropics/claude-code/issues/93528 (new chat messages hang f
 Windows port of the Hebrew PDF text extractor: blocked, see
 `[[hebrew-text-extractor-windows-blocked]]` — the user has no current access to the Windows
 computer where the only copy of that project's source code lives.
+
+### Session (2026-09-20): line-segmentation OCR pipeline, self-update fix, rotate/crop UI, PDF import
+
+- Real Hebrew-handwriting-OCR benchmark (github.com/itayinbarr/heb-ocr, MIT, independent dev
+  project) showed Gemini Flash's per-LINE accuracy (0.119 median CER) is actually the best of
+  every model tested, but its FULL-PAGE accuracy (0.764 CER) is much worse than a dedicated
+  small HTR model's page-mode pipeline (0.331, via classic line-segmentation). Root-caused this
+  app's mediocre accuracy to reading whole pages at once rather than a model capability gap.
+- Built `src/main/lineSegmenter.js`: horizontal ink-density-projection line segmentation (no
+  external CV library), validated against a synthetic test image before wiring in.
+- Rearchitected transcription (`src/main/main.js`, `gemini.js`): segment page into lines →
+  transcribe each line separately (own prompt tuned for single-line reading) → join results.
+  Concurrency-limited + staggered requests, retry-with-backoff on both 429 (rate limit) AND
+  503 (transient overload — found live, wasn't originally retried, real gap).
+- Live-probed actual free-tier RPM limits (Google's docs don't publish these per-model
+  anymore): `gemini-3.6-flash` capped at ~5 req/min for this key -- far too slow for one
+  request per line on a real page. `gemini-3.5-flash-lite` and `gemini-3.1-flash-lite` both
+  handled 8 rapid requests with zero rate-limiting; switched per-line transcription to
+  `gemini-3.5-flash-lite` (`MODEL_NAME_LINE` in gemini.js), kept `gemini-3.6-flash` for the
+  rare whole-page fallback.
+- Found and fixed a real orientation bug: `heic-convert` decodes HEIC pixels but does not
+  carry the source's EXIF orientation tag through to its JPEG output — confirmed with a real
+  iPad photo that came out landscape with NO orientation tag at all (not recoverable from
+  metadata, there was nothing there). Added `exifr`-based orientation reading from the
+  ORIGINAL file bytes before conversion, re-stamped via sharp onto the working buffer.
+- Repeatedly misjudged this specific handwriting's rotation by eye across several rounds
+  (see conversation) -- stopped guessing visually and instead used the segmentation
+  algorithm's own band-count/consistency as an objective test across all 4 rotations. Lesson:
+  don't eyeball unfamiliar dense cursive for orientation; test algorithmically instead.
+- Root cause of persistent bad segmentation turned out to be background (the photographed
+  page didn't fill the frame -- dark couch/blanket visible around it), not orientation: dark
+  background pixels mixed into the same rows as real text corrupted the ink-threshold math
+  for the whole image. Cropping to the page first took segmentation from 4 messy bands
+  (stdev 386px) to 11 clean, evenly-spaced bands (stdev 9px) -- confirmed empirically before
+  shipping.
+- Added `detectPageBoundingBox()` (imageUtils.js): finds the photographed page's bounding box
+  by looking for "mostly bright" rows/columns (paper vs. background), distinct from the
+  existing `trim()` step which only removes a uniform blank border and does nothing against a
+  textured/colored background.
+- Built a full rotate + draggable-crop preview step before transcription (`previewModal` in
+  index.html/renderer.js): shows the photo, auto-suggests a crop box, lets the user drag
+  corner handles to adjust, rotate left/right, before confirming. Needed since some photos
+  have zero EXIF data and some backgrounds fool the auto-crop.
+- Added PDF import: `sharp`'s bundled libvips in this environment has no PDF support
+  (`sharp.format.pdf.input` all false) — used `pdfjs-dist` (ESM-only, dynamic `import()` from
+  this CommonJS codebase) + `@napi-rs/canvas` to render a PDF's first page to PNG, feeding it
+  through the same rotate/crop/segment/transcribe pipeline as a photo. Verified both the
+  native binary (`@napi-rs/canvas`'s .node file) and pdfjs's bundled standard_fonts assets
+  get correctly auto-unpacked/bundled by electron-builder in a real packaged build, not just
+  dev mode -- checked `app.asar.unpacked` directly rather than assuming.
+- User tested a real scanner-app PDF (vs. camera photo) after these fixes: "somewhat better,"
+  a real but modest improvement.
+- Version bumped to 0.3.0 for this release.

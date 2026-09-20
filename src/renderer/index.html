@@ -23,12 +23,42 @@
       <button id="updateBannerBtn" class="btn-primary">Update Now</button>
     </div>
 
+    <div id="previewModal" class="modal hidden">
+      <div class="modal-content">
+        <h2>Check the photo before transcribing</h2>
+        <p class="muted small">
+          Rotate if the page doesn't look upright, and drag the box corners so it hugs just
+          the page — background around the page can throw off line detection.
+        </p>
+        <div class="preview-frame" id="previewFrame">
+          <div class="crop-container" id="cropContainer">
+            <img id="previewImage" class="preview-image" />
+            <div class="crop-box" id="cropBox">
+              <div class="crop-handle" data-corner="nw"></div>
+              <div class="crop-handle" data-corner="ne"></div>
+              <div class="crop-handle" data-corner="sw"></div>
+              <div class="crop-handle" data-corner="se"></div>
+            </div>
+          </div>
+        </div>
+        <div class="row" style="justify-content: center; margin-top: 12px;">
+          <button id="rotateLeftBtn" class="btn-secondary">⟲ Rotate Left</button>
+          <button id="rotateRightBtn" class="btn-secondary">⟳ Rotate Right</button>
+          <button id="resetCropBtn" class="btn-secondary">Reset Crop</button>
+        </div>
+        <div class="modal-actions">
+          <button id="cancelPreviewBtn" class="btn-secondary">Cancel</button>
+          <button id="confirmTranscribeBtn" class="btn-primary">Transcribe</button>
+        </div>
+      </div>
+    </div>
+
     <main class="layout">
       <aside class="notes-pane">
         <div id="dropZone" class="drop-zone">
-          <p>Drag a photo here</p>
+          <p>Drag a photo or scanned PDF here</p>
           <p class="muted">or</p>
-          <button id="pickImageBtn" class="btn-primary">Choose Photo…</button>
+          <button id="pickImageBtn" class="btn-primary">Choose Photo or PDF…</button>
           <p id="importStatus" class="muted"></p>
         </div>
         <div class="notes-list-header">

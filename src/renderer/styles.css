@@ -177,6 +177,56 @@ body {
 .row input { flex: 1; padding: 8px; border: 1px solid #d0d0d5; border-radius: 6px; }
 .status-line { font-size: 12px; color: #34c759; min-height: 16px; word-break: break-all; }
 .status-line.error { color: #ff3b30; }
+
+#previewModal .modal-content { width: 640px; }
+
+.preview-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #f5f5f7;
+  border-radius: 8px;
+  padding: 12px;
+  min-height: 240px;
+  max-height: 50vh;
+  overflow: hidden;
+}
+.preview-image {
+  max-width: 100%;
+  max-height: 46vh;
+  display: block;
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+.crop-container {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+  overflow: hidden;
+}
+.crop-box {
+  position: absolute;
+  border: 2px solid #fff;
+  /* Darkens everything outside the box without extra overlay elements --
+     the container's overflow:hidden clips the huge spread to its bounds. */
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  cursor: move;
+  box-sizing: border-box;
+}
+.crop-handle {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border: 1px solid #007aff;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+.crop-handle[data-corner='nw'] { top: 0; left: 0; cursor: nwse-resize; }
+.crop-handle[data-corner='se'] { top: 100%; left: 100%; cursor: nwse-resize; }
+.crop-handle[data-corner='ne'] { top: 0; left: 100%; cursor: nesw-resize; }
+.crop-handle[data-corner='sw'] { top: 100%; left: 0; cursor: nesw-resize; }
 .modal-actions {
   margin-top: 20px;
   display: flex;

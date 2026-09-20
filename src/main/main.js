@@ -3,10 +3,105 @@ const path = require('path');
 
 const settingsStore = require('./store');
 const apiKeyStore = require('./apiKeyStore');
-const { isSupportedImage, loadImageForTranscription, prepareImagesForGemini } = require('./imageUtils');
+const {
+  isSupportedImage,
+  loadImageForTranscription,
+  prepareImagesForGemini,
+  generatePreviewDataUrl,
+} = require('./imageUtils');
+const { segmentIntoLines } = require('./lineSegmenter');
 const gemini = require('./gemini');
 const notesStore = require('./notesStore');
 const updater = require('./updater');
+
+const LINE_TRANSCRIBE_CONCURRENCY = 3;
+const LINE_RATE_LIMIT_MAX_RETRIES = 3;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+const RETRYABLE_ERROR_KINDS = new Set(['quota', 'unavailable']);
+
+async function transcribeLineWithRetry(apiKey, image) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await gemini.transcribeLine({ apiKey, image });
+    } catch (err) {
+      // Retries both real rate-limiting (429) and transient "high demand"
+      // server overload (503+) -- the latter showed up in real testing and
+      // originally wasn't retried at all, failing lines that would have
+      // succeeded a few seconds later.
+      if (RETRYABLE_ERROR_KINDS.has(err.kind) && attempt < LINE_RATE_LIMIT_MAX_RETRIES) {
+        await sleep(1000 * 2 ** (attempt + 1)); // 2s, 4s, 8s
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+// Runs `worker` over `items` with at most `limit` in flight at once, calling
+// `onProgress(doneCount, total)` after each one finishes (order not
+// guaranteed, but results[] preserves the original index order).
+async function mapWithConcurrencyLimit(items, limit, worker, onProgress) {
+  const results = new Array(items.length);
+  let nextIndex = 0;
+  let doneCount = 0;
+
+  async function runNext(startDelay) {
+    if (startDelay) await sleep(startDelay);
+    while (nextIndex < items.length) {
+      const i = nextIndex++;
+      results[i] = await worker(items[i], i);
+      doneCount++;
+      if (onProgress) onProgress(doneCount, items.length);
+    }
+  }
+
+  // Stagger each concurrent slot's first request slightly rather than
+  // firing them all in the same instant -- real testing hit 503 ("high
+  // demand") errors on 3 simultaneous first requests; staggering is a
+  // reasonable mitigation, though the retry-on-503 fix above is what
+  // actually guarantees those errors get resolved either way.
+  const workerCount = Math.min(limit, items.length);
+  const workers = Array.from({ length: workerCount }, (_, slot) => runNext(slot * 250));
+  await Promise.all(workers);
+  return results;
+}
+
+// Transcribes a page by splitting it into individual line images and
+// transcribing each one separately (a real Hebrew-handwriting benchmark
+// shows Gemini reads a single line far more accurately than a whole page —
+// see lineSegmenter.js for the full rationale), joining the results back
+// into one block of text in reading order. Falls back to whole-page
+// transcription if segmentation isn't confident about where the lines are.
+async function transcribeByLines(apiKey, photoBuffer, sendProgress) {
+  sendProgress({ phase: 'segmenting' });
+  const lines = await segmentIntoLines(photoBuffer);
+
+  if (!lines) {
+    sendProgress({ phase: 'whole-page' });
+    const [wholePageImage] = await prepareImagesForGemini(photoBuffer);
+    return gemini.transcribeHandwriting({ apiKey, images: [wholePageImage] });
+  }
+
+  sendProgress({ phase: 'transcribing', done: 0, total: lines.length });
+  const lineTexts = await mapWithConcurrencyLimit(
+    lines,
+    LINE_TRANSCRIBE_CONCURRENCY,
+    async (image, index) => {
+      try {
+        return await transcribeLineWithRetry(apiKey, image);
+      } catch (err) {
+        return `[⚠ line ${index + 1} of ${lines.length} failed to transcribe: ${err.message}]`;
+      }
+    },
+    (done, total) => sendProgress({ phase: 'transcribing', done, total })
+  );
+
+  return lineTexts.join('\n');
+}
 
 let mainWindow;
 
@@ -73,9 +168,11 @@ ipcMain.handle('apikey:clear', () => {
 
 ipcMain.handle('image:pick', async () => {
   const result = await dialog.showOpenDialog(mainWindow, {
-    title: 'Select a photo of handwritten Hebrew notes',
+    title: 'Select a photo or scanned PDF of handwritten Hebrew notes',
     properties: ['openFile'],
-    filters: [{ name: 'Images', extensions: ['jpg', 'jpeg', 'png', 'heic', 'heif'] }],
+    filters: [
+      { name: 'Photos and PDFs', extensions: ['jpg', 'jpeg', 'png', 'heic', 'heif', 'pdf'] },
+    ],
   });
   if (result.canceled || result.filePaths.length === 0) return null;
   const filePath = result.filePaths[0];
@@ -85,7 +182,11 @@ ipcMain.handle('image:pick', async () => {
   return filePath;
 });
 
-ipcMain.handle('note:create-from-file', async (_event, filePath) => {
+ipcMain.handle('image:preview', (_event, filePath, rotationDegrees) =>
+  generatePreviewDataUrl(filePath, rotationDegrees)
+);
+
+ipcMain.handle('note:create-from-file', async (_event, filePath, rotationDegrees = 0, cropBox = null) => {
   const settings = settingsStore.readSettings();
   if (!settings.syncFolderPath) {
     throw new Error('No sync folder is configured yet. Open Settings and choose one first.');
@@ -94,10 +195,11 @@ ipcMain.handle('note:create-from-file', async (_event, filePath) => {
     throw new Error('No Gemini API key is configured yet. Open Settings and paste your free API key first.');
   }
 
-  const { buffer, storedExtension } = await loadImageForTranscription(filePath);
-  const images = await prepareImagesForGemini(buffer);
+  const { buffer, storedExtension } = await loadImageForTranscription(filePath, rotationDegrees, cropBox);
   const apiKey = apiKeyStore.getApiKey();
-  const text = await gemini.transcribeHandwriting({ apiKey, images });
+  const text = await transcribeByLines(apiKey, buffer, (progress) => {
+    mainWindow?.webContents.send('note:progress', progress);
+  });
 
   const note = notesStore.createNote(settings.syncFolderPath, {
     imageBuffer: buffer,

@@ -12,7 +12,10 @@ contextBridge.exposeInMainWorld('api', {
   clearApiKey: () => ipcRenderer.invoke('apikey:clear'),
 
   pickImage: () => ipcRenderer.invoke('image:pick'),
-  createNoteFromFile: (filePath) => ipcRenderer.invoke('note:create-from-file', filePath),
+  getImagePreview: (filePath, rotationDegrees) =>
+    ipcRenderer.invoke('image:preview', filePath, rotationDegrees),
+  createNoteFromFile: (filePath, rotationDegrees, cropBox) =>
+    ipcRenderer.invoke('note:create-from-file', filePath, rotationDegrees, cropBox),
   updateNoteText: (id, text) => ipcRenderer.invoke('note:update-text', { id, text }),
   listNotes: () => ipcRenderer.invoke('notes:list'),
   revealInFolder: (filePath) => ipcRenderer.invoke('notes:reveal', filePath),
@@ -25,4 +28,12 @@ contextBridge.exposeInMainWorld('api', {
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   checkForUpdate: () => ipcRenderer.invoke('update:check'),
   applyUpdate: (assetUrl) => ipcRenderer.invoke('update:apply', assetUrl),
+
+  // Live progress while a note is being segmented into lines and
+  // transcribed. Returns an unsubscribe function.
+  onImportProgress: (callback) => {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('note:progress', listener);
+    return () => ipcRenderer.removeListener('note:progress', listener);
+  },
 });

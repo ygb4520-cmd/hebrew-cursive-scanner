@@ -102,10 +102,27 @@ function setImporting(isImporting, message) {
   importStatus.classList.toggle('error', false);
 }
 
-async function importFromPath(filePath) {
-  setImporting(true, 'Transcribing with Gemini…');
+function progressMessage(progress) {
+  switch (progress.phase) {
+    case 'segmenting':
+      return 'Finding lines of text…';
+    case 'whole-page':
+      return 'Could not confidently split into lines — transcribing the whole page…';
+    case 'transcribing':
+      return `Transcribing line ${progress.done}/${progress.total}…`;
+    default:
+      return 'Transcribing…';
+  }
+}
+
+window.api.onImportProgress((progress) => {
+  importStatus.textContent = progressMessage(progress);
+});
+
+async function importFromPath(filePath, rotationDegrees, cropBox) {
+  setImporting(true, 'Finding lines of text…');
   try {
-    const note = await window.api.createNoteFromFile(filePath);
+    const note = await window.api.createNoteFromFile(filePath, rotationDegrees, cropBox);
     await loadNotes();
     selectNote(note.id);
     setImporting(false, 'Done.');
@@ -116,10 +133,168 @@ async function importFromPath(filePath) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Preview + rotate (some real photos carry no EXIF orientation at all, so
+// this can't be fully automatic -- confirmed with a real iPad photo)
+// ---------------------------------------------------------------------------
+
+const previewModal = document.getElementById('previewModal');
+const previewImage = document.getElementById('previewImage');
+const cropBoxEl = document.getElementById('cropBox');
+const rotateLeftBtn = document.getElementById('rotateLeftBtn');
+const rotateRightBtn = document.getElementById('rotateRightBtn');
+const resetCropBtn = document.getElementById('resetCropBtn');
+const cancelPreviewBtn = document.getElementById('cancelPreviewBtn');
+const confirmTranscribeBtn = document.getElementById('confirmTranscribeBtn');
+
+const FULL_CROP = { left: 0, top: 0, right: 1, bottom: 1 };
+const MIN_CROP_SIZE = 0.08; // fraction, avoids collapsing the box to nothing
+
+let pendingFilePath = null;
+let pendingRotation = 0;
+let pendingCrop = { ...FULL_CROP };
+let suggestedCrop = null; // what "Reset Crop" goes back to
+
+function renderCropBox() {
+  // Position the overlay box in on-screen pixels relative to the image's
+  // actual rendered size (which may be scaled down from its natural size).
+  const w = previewImage.clientWidth;
+  const h = previewImage.clientHeight;
+  cropBoxEl.style.left = `${pendingCrop.left * w}px`;
+  cropBoxEl.style.top = `${pendingCrop.top * h}px`;
+  cropBoxEl.style.width = `${(pendingCrop.right - pendingCrop.left) * w}px`;
+  cropBoxEl.style.height = `${(pendingCrop.bottom - pendingCrop.top) * h}px`;
+}
+
+async function refreshPreviewImage() {
+  const result = await window.api.getImagePreview(pendingFilePath, pendingRotation);
+  suggestedCrop = result.suggestedCrop || FULL_CROP;
+  pendingCrop = { ...suggestedCrop };
+  await new Promise((resolve) => {
+    previewImage.onload = resolve;
+    previewImage.src = result.dataUrl;
+  });
+  renderCropBox();
+}
+
+async function openPreview(filePath) {
+  pendingFilePath = filePath;
+  pendingRotation = 0;
+  previewModal.classList.remove('hidden');
+  try {
+    await refreshPreviewImage();
+  } catch (err) {
+    previewModal.classList.add('hidden');
+    importStatus.textContent = `Could not preview photo: ${err.message}`;
+    importStatus.classList.add('error');
+  }
+}
+
+function closePreview() {
+  previewModal.classList.add('hidden');
+  pendingFilePath = null;
+}
+
+rotateLeftBtn.addEventListener('click', async () => {
+  pendingRotation = (pendingRotation - 90 + 360) % 360;
+  await refreshPreviewImage();
+});
+rotateRightBtn.addEventListener('click', async () => {
+  pendingRotation = (pendingRotation + 90) % 360;
+  await refreshPreviewImage();
+});
+resetCropBtn.addEventListener('click', () => {
+  pendingCrop = { ...(suggestedCrop || FULL_CROP) };
+  renderCropBox();
+});
+cancelPreviewBtn.addEventListener('click', closePreview);
+confirmTranscribeBtn.addEventListener('click', async () => {
+  const filePath = pendingFilePath;
+  const rotation = pendingRotation;
+  const crop = pendingCrop;
+  closePreview();
+  await importFromPath(filePath, rotation, crop);
+});
+
+// ---- Crop box dragging (resize via corner handles, move via the box itself) ----
+
+function clientToFraction(clientX, clientY) {
+  const rect = previewImage.getBoundingClientRect();
+  return {
+    x: Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)),
+    y: Math.max(0, Math.min(1, (clientY - rect.top) / rect.height)),
+  };
+}
+
+cropBoxEl.querySelectorAll('.crop-handle').forEach((handle) => {
+  handle.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const corner = handle.dataset.corner;
+    const fixedX = corner.includes('w') ? pendingCrop.right : pendingCrop.left;
+    const fixedY = corner.includes('n') ? pendingCrop.bottom : pendingCrop.top;
+
+    function onMove(moveEvent) {
+      const { x, y } = clientToFraction(moveEvent.clientX, moveEvent.clientY);
+      if (corner.includes('w')) {
+        pendingCrop.left = Math.min(x, fixedX - MIN_CROP_SIZE);
+        pendingCrop.right = fixedX;
+      } else {
+        pendingCrop.right = Math.max(x, fixedX + MIN_CROP_SIZE);
+        pendingCrop.left = fixedX;
+      }
+      if (corner.includes('n')) {
+        pendingCrop.top = Math.min(y, fixedY - MIN_CROP_SIZE);
+        pendingCrop.bottom = fixedY;
+      } else {
+        pendingCrop.bottom = Math.max(y, fixedY + MIN_CROP_SIZE);
+        pendingCrop.top = fixedY;
+      }
+      renderCropBox();
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+});
+
+cropBoxEl.addEventListener('mousedown', (e) => {
+  if (e.target !== cropBoxEl) return; // a handle's own listener handles that case
+  e.preventDefault();
+  const start = clientToFraction(e.clientX, e.clientY);
+  const startCrop = { ...pendingCrop };
+  const width = startCrop.right - startCrop.left;
+  const height = startCrop.bottom - startCrop.top;
+
+  function onMove(moveEvent) {
+    const { x, y } = clientToFraction(moveEvent.clientX, moveEvent.clientY);
+    let dx = x - start.x;
+    let dy = y - start.y;
+    dx = Math.max(-startCrop.left, Math.min(1 - startCrop.right, dx));
+    dy = Math.max(-startCrop.top, Math.min(1 - startCrop.bottom, dy));
+    pendingCrop = {
+      left: startCrop.left + dx,
+      right: startCrop.right + dx,
+      top: startCrop.top + dy,
+      bottom: startCrop.bottom + dy,
+    };
+    renderCropBox();
+  }
+  function onUp() {
+    document.removeEventListener('mousemove', onMove);
+    document.removeEventListener('mouseup', onUp);
+  }
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+});
+
 pickImageBtn.addEventListener('click', async () => {
   try {
     const filePath = await window.api.pickImage();
-    if (filePath) await importFromPath(filePath);
+    if (filePath) await openPreview(filePath);
   } catch (err) {
     importStatus.textContent = `Could not open file picker: ${err.message}`;
     importStatus.classList.add('error');
@@ -142,7 +317,7 @@ dropZone.addEventListener('drop', async (e) => {
     importStatus.classList.add('error');
     return;
   }
-  await importFromPath(filePath);
+  await openPreview(filePath);
 });
 
 // ---------------------------------------------------------------------------
