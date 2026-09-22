@@ -421,3 +421,23 @@ computer where the only copy of that project's source code lives.
   Succeeded -- no ENOTDIR, `Contents/MacOS` intact, app relaunched automatically reporting
   0.3.2, confirmed via `Info.plist` and a fresh PID. The fix is real, not just theoretically
   correct this time.
+
+### Full-pipeline regression test (post self-update-fix) + cleanup attempt
+
+- User asked for a full regression test ("everything else still works") using an already-real
+  photo rather than a fresh manual drag-drop. Reused a real note's already-saved `photo.png`
+  (from an earlier PDF import) as the test input, and drove the exact same functions the UI's
+  IPC handlers call (`loadImageForTranscription` -> line-segment -> per-line `transcribeLine`
+  -> `notesStore.createNote` -> `updateNoteText` -> `listNotes` -> `shell.trashItem`) via a
+  throwaway Electron harness pointed at the real app's userData (same `{name:
+  "hebrew-cursive-scanner"}` trick used for the rate-limit probe and self-update tests
+  earlier), so it used the real saved API key with zero manual UI clicks. All steps passed:
+  15 lines segmented and transcribed, edit saved, list reflected it, delete moved it to trash
+  and removed it from the active list.
+- User wants down to a single installed copy. The stale v0.1.0 in the system-wide
+  `/Applications` (from the very first CI build, months ago) still can't be removed
+  programmatically -- confirmed again with a fresh `rm -rf`, still "Permission denied" (this
+  account has no admin rights on this Mac, same constraint hit earlier when trying to install
+  Google Drive / restructure folders). Left instructions for the user to delete it themselves
+  via Finder (which can prompt for an admin password interactively, unlike a terminal `rm`).
+  The working, up-to-date copy remains `~/Applications/Hebrew Cursive Scanner.app` (v0.3.2).
