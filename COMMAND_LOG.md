@@ -417,3 +417,7 @@ computer where the only copy of that project's source code lives.
 - Version bumped to 0.3.2 specifically to get a real update TARGET for v0.3.1 (already
   reinstalled clean, with the fix) to update TO -- this is the actual valid test of whether
   the fix works, unlike the v0.3.0-initiated attempt.
+- **Verified for real**: triggered v0.3.1 -> v0.3.2 self-update from the live installed app.
+  Succeeded -- no ENOTDIR, `Contents/MacOS` intact, app relaunched automatically reporting
+  0.3.2, confirmed via `Info.plist` and a fresh PID. The fix is real, not just theoretically
+  correct this time.
