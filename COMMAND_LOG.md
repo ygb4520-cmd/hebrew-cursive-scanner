@@ -403,7 +403,17 @@ computer where the only copy of that project's source code lives.
 - Fixed `applyMacUpdate` (src/main/updater.js) to match the Windows pattern properly: spawn
   a detached bash helper that waits for this process's PID to fully exit, THEN does the
   rm/cp/relaunch, instead of doing it in-process before quitting.
-- Version bumped to 0.3.1. Plan: verify by actually triggering a real v0.3.0 -> v0.3.1
-  self-update from the live installed app (not a synthetic test harness this time) before
-  considering this closed, given the last "verified" claim for this exact code path turned
-  out to be wrong.
+- Version bumped to 0.3.1, but v0.3.0 -> v0.3.1 self-update retest hit the SAME ENOTDIR
+  error. Realized why: the RUNNING process's own loaded code executes the update logic, not
+  the version being updated TO -- v0.3.0 was still running its own (unfixed) applyMacUpdate
+  when asked to update, so of course it failed identically. The fix in v0.3.1's code was
+  real but untestable via a v0.3.0-initiated update; had to manually reinstall v0.3.1 (same
+  gh release download + extract approach) so a FIXED version would actually be the one
+  running. Two crash reports the user shared (2026-09-20 and 2026-09-21) were both downstream
+  of these exact failed-update incidents (the process's own backing files getting pulled out
+  from under it while still running eventually triggers a hard V8/JIT crash a minute or two
+  later) -- not separate new bugs, confirmed by matching launch/crash timestamps to when each
+  update attempt happened.
+- Version bumped to 0.3.2 specifically to get a real update TARGET for v0.3.1 (already
+  reinstalled clean, with the fix) to update TO -- this is the actual valid test of whether
+  the fix works, unlike the v0.3.0-initiated attempt.
