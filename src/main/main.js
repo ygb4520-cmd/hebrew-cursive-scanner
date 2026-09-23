@@ -76,23 +76,32 @@ async function mapWithConcurrencyLimit(items, limit, worker, onProgress) {
 // see lineSegmenter.js for the full rationale), joining the results back
 // into one block of text in reading order. Falls back to whole-page
 // transcription if segmentation isn't confident about where the lines are.
+//
+// Returns { text, lineBoxes }. lineBoxes (null on the whole-page fallback,
+// since there's no per-line data in that case) lets the UI show which spot
+// on the photo a hovered word came from — see lineSegmenter.js for how the
+// word boxes themselves are found, and renderer.js for how a mismatch
+// between word-box count and actual transcribed word count falls back to
+// highlighting the whole line instead of guessing wrong.
 async function transcribeByLines(apiKey, photoBuffer, sendProgress) {
   sendProgress({ phase: 'segmenting' });
-  const lines = await segmentIntoLines(photoBuffer);
+  const segmentation = await segmentIntoLines(photoBuffer);
 
-  if (!lines) {
+  if (!segmentation) {
     sendProgress({ phase: 'whole-page' });
     const [wholePageImage] = await prepareImagesForGemini(photoBuffer);
-    return gemini.transcribeHandwriting({ apiKey, images: [wholePageImage] });
+    const text = await gemini.transcribeHandwriting({ apiKey, images: [wholePageImage] });
+    return { text, lineBoxes: null };
   }
 
+  const { width, height, lines } = segmentation;
   sendProgress({ phase: 'transcribing', done: 0, total: lines.length });
   const lineTexts = await mapWithConcurrencyLimit(
     lines,
     LINE_TRANSCRIBE_CONCURRENCY,
-    async (image, index) => {
+    async (line, index) => {
       try {
-        return await transcribeLineWithRetry(apiKey, image);
+        return await transcribeLineWithRetry(apiKey, line.image);
       } catch (err) {
         return `[⚠ line ${index + 1} of ${lines.length} failed to transcribe: ${err.message}]`;
       }
@@ -100,7 +109,13 @@ async function transcribeByLines(apiKey, photoBuffer, sendProgress) {
     (done, total) => sendProgress({ phase: 'transcribing', done, total })
   );
 
-  return lineTexts.join('\n');
+  const lineBoxes = lines.map((line) => ({
+    top: line.top / height,
+    bottom: (line.bottom + 1) / height,
+    wordBoxes: line.wordBoxes,
+  }));
+
+  return { text: lineTexts.join('\n'), lineBoxes };
 }
 
 let mainWindow;
@@ -197,7 +212,7 @@ ipcMain.handle('note:create-from-file', async (_event, filePath, rotationDegrees
 
   const { buffer, storedExtension } = await loadImageForTranscription(filePath, rotationDegrees, cropBox);
   const apiKey = apiKeyStore.getApiKey();
-  const text = await transcribeByLines(apiKey, buffer, (progress) => {
+  const { text, lineBoxes } = await transcribeByLines(apiKey, buffer, (progress) => {
     mainWindow?.webContents.send('note:progress', progress);
   });
 
@@ -205,6 +220,7 @@ ipcMain.handle('note:create-from-file', async (_event, filePath, rotationDegrees
     imageBuffer: buffer,
     storedExtension,
     text,
+    lineBoxes,
   });
   return note;
 });

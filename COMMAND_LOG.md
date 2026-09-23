@@ -441,3 +441,60 @@ computer where the only copy of that project's source code lives.
   Google Drive / restructure folders). Left instructions for the user to delete it themselves
   via Finder (which can prompt for an admin password interactively, unlike a terminal `rm`).
   The working, up-to-date copy remains `~/Applications/Hebrew Cursive Scanner.app` (v0.3.2).
+
+### "Just follow the paper, don't use your brain" prompt experiment (reverted) + word-highlight feature (shipped, v0.3.3)
+
+- User's hypothesis: bad transcriptions might be Gemini "correcting" unfamiliar personal
+  shorthand/abbreviations toward real Gemara/dictionary words instead of copying the actual
+  letter shapes. Rewrote `SHARED_GUIDANCE` in `gemini.js` to explicitly forbid using
+  Talmudic/context knowledge to "fix" words, emphasizing literal letter-by-letter copying.
+  Tested live against a real saved note (`1789940099387-8cad6516`, via a throwaway Electron
+  harness reusing the real app's userData/API key, same pattern as prior regression tests --
+  never saw the actual key). Output differed noticeably from the old prompt but user judged it
+  "not any better" after live comparison in dev mode. Reverted `gemini.js` via `git checkout --`
+  (change was never committed, so a clean revert). Lesson: this specific failure mode isn't
+  primarily a prompt-wording problem.
+- User then asked for a real debugging feature instead: hover a word in the transcribed text,
+  see it highlighted on the source photo, plus side-by-side photo/text layout with zoom. Asked
+  first whether this was feasible without hurting transcription quality -- yes, confirmed and
+  built as a purely local, additive layer: never touches the Gemini call/prompt/model, so
+  transcription quality is byte-for-byte unaffected either way.
+  - `lineSegmenter.js`: extended the existing row-based ink-projection (used for line-splitting)
+    with a second pass -- column-based ink projection *within* each line -- to find word-sized
+    ink clusters. Real risk found and handled: Hebrew cursive letters are mostly disconnected
+    (unlike English/Arabic cursive), so a naive "any gap = new word" rule would just find
+    individual letters. Fix: classify each internal gap as "intra-word" vs "inter-word" by
+    finding the single biggest proportional jump in gap sizes for that specific line (adaptive
+    per-line, not a fixed pixel threshold), only trusting the split if that jump is at least
+    1.6x.
+  - **Tested this against real data before building any UI**: wrote a throwaway script
+    (plain `node`, no Electron needed since this module has no Electron deps) that ran the new
+    segmentation against the real photo from note `1789940099387-8cad6516` and compared word
+    cluster counts to that note's already-saved real transcription, line by line. Result:
+    0 of 15 lines had cluster-count == transcribed-word-count. Reported this honestly to the
+    user before proceeding rather than shipping a feature that silently claims precision it
+    doesn't have.
+  - Given that, implemented two-tier highlighting in `renderer.js`: when a line's cluster count
+    matches the current word count exactly, hovering a word highlights that exact cluster; when
+    it doesn't (the common case on real cursive), it falls back to *proportional* placement
+    among whatever clusters were found -- an approximate position within the line, not a promise
+    of the exact word. The line-height band itself (which line a word came from) is always exact
+    regardless, since that comes from the already-proven row-projection step.
+  - `main.js`/`notesStore.js`: `transcribeByLines` now returns `{text, lineBoxes}` (lineBoxes
+    null on the rare whole-page fallback, where there's no per-line data at all); `createNote`
+    persists `lineBoxes` (fractions of the saved photo's own width/height) in `meta.json` only
+    when present, so old notes and whole-page-fallback notes just don't get the hover feature
+    rather than breaking.
+  - `renderer.js`/`styles.css`: rebuilt the note detail view as photo-pane (zoomable via
+    wheel/buttons, pannable via drag -- same self-cleaning mousemove/mouseup pattern already
+    used for the crop-box UI) + text-pane side by side, replacing the old stacked
+    thumbnail-then-textarea layout. Text is now rendered as hoverable per-word `<span>`s in a
+    read-only view by default, with an "Edit Text" toggle that swaps in the original textarea
+    for free-form editing (edits don't need to keep any word-box mapping in sync -- matching is
+    recomputed fresh from the current text every time a note is displayed).
+  - User's call: "ship it, not so good but no downside" -- accurate self-assessment matching the
+    live test above; shipped anyway since it's strictly additive (existing users/notes unaffected,
+    text editing/copy/delete/reveal all still work) and still gives real diagnostic value (you can
+    now at least see which LINE and roughly where a bad transcription came from on the actual
+    page, which is the debugging visibility the user actually asked for).
+  - Version bumped 0.3.2 -> 0.3.3 for this release.

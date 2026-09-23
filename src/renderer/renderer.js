@@ -383,6 +383,70 @@ async function confirmDelete(id) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Note detail: side-by-side photo (zoomable/pannable) + text, with
+// hover-a-word-to-see-it-on-the-photo highlighting.
+//
+// Word-level precision is best-effort: Hebrew cursive letters are mostly
+// disconnected, so the local ink-cluster count computed from the photo
+// (see lineSegmenter.js) frequently doesn't match the number of words
+// Gemini actually transcribed for that line. When it matches, hovering a
+// word highlights exactly that ink cluster. When it doesn't, the highlight
+// falls back to an approximate position (proportional placement among the
+// clusters that were found) within a precise line-height band -- not a
+// promise of the exact word, just a narrowed-down area instead of the
+// whole line every time.
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 6;
+
+function computeHighlightBox(note, lineIndex, wordIndex, lineTokenCounts) {
+  const lineBoxes = note.lineBoxes;
+  if (!lineBoxes || !lineBoxes[lineIndex]) return null;
+  const line = lineBoxes[lineIndex];
+  const wordBoxes = line.wordBoxes;
+  const tokenCount = lineTokenCounts[lineIndex] || 0;
+
+  if (!wordBoxes || wordBoxes.length === 0 || tokenCount === 0) {
+    return { x0: 0, x1: 1, y0: line.top, y1: line.bottom };
+  }
+  if (wordBoxes.length === tokenCount) {
+    return { x0: wordBoxes[wordIndex].left, x1: wordBoxes[wordIndex].right, y0: line.top, y1: line.bottom };
+  }
+  const boxIndex = Math.min(wordBoxes.length - 1, Math.floor((wordIndex / tokenCount) * wordBoxes.length));
+  return { x0: wordBoxes[boxIndex].left, x1: wordBoxes[boxIndex].right, y0: line.top, y1: line.bottom };
+}
+
+// Renders `note.text` into `container` as hoverable per-word spans, and
+// returns the word-count of each line (needed by computeHighlightBox to
+// decide exact-vs-approximate matching; recomputed on every render since
+// the user can edit the text, which can change word counts per line).
+function renderWordSpans(container, note) {
+  container.innerHTML = '';
+  const lines = (note.text || '').split('\n');
+  const lineTokenCounts = [];
+  lines.forEach((lineText, lineIndex) => {
+    const lineDiv = document.createElement('div');
+    lineDiv.className = 'text-line';
+    const tokens = lineText.split(/\s+/).filter(Boolean);
+    lineTokenCounts.push(tokens.length);
+    if (tokens.length === 0) {
+      lineDiv.innerHTML = '&nbsp;';
+    } else {
+      tokens.forEach((tok, wordIndex) => {
+        const span = document.createElement('span');
+        span.className = 'word';
+        span.textContent = tok;
+        span.dataset.line = String(lineIndex);
+        span.dataset.word = String(wordIndex);
+        lineDiv.appendChild(span);
+        if (wordIndex < tokens.length - 1) lineDiv.appendChild(document.createTextNode(' '));
+      });
+    }
+    container.appendChild(lineDiv);
+  });
+  return lineTokenCounts;
+}
+
 function selectNote(id) {
   activeNoteId = id;
   renderNotesList();
@@ -391,24 +455,203 @@ function selectNote(id) {
 
   detailPane.innerHTML = '';
 
+  let zoom = 1;
+  let panX = 0;
+  let panY = 0;
+  let imgBaseWidth = 0;
+  let imgBaseHeight = 0;
+  let editing = false;
+  let lineTokenCounts = [];
+
+  const split = document.createElement('div');
+  split.className = 'detail-split';
+  detailPane.appendChild(split);
+
+  // ---- Photo pane: zoom + pan ----
+  const photoPane = document.createElement('div');
+  photoPane.className = 'detail-photo-pane';
+  split.appendChild(photoPane);
+
+  const toolbar = document.createElement('div');
+  toolbar.className = 'photo-toolbar';
+  const zoomOutBtn = document.createElement('button');
+  zoomOutBtn.className = 'btn-secondary';
+  zoomOutBtn.textContent = '−';
+  const zoomLabel = document.createElement('span');
+  zoomLabel.className = 'zoom-label';
+  const zoomInBtn = document.createElement('button');
+  zoomInBtn.className = 'btn-secondary';
+  zoomInBtn.textContent = '+';
+  const zoomResetBtn = document.createElement('button');
+  zoomResetBtn.className = 'btn-secondary';
+  zoomResetBtn.textContent = 'Reset';
+  toolbar.append(zoomOutBtn, zoomLabel, zoomInBtn, zoomResetBtn);
+  photoPane.appendChild(toolbar);
+
+  const viewport = document.createElement('div');
+  viewport.className = 'photo-viewport';
+  photoPane.appendChild(viewport);
+
+  const content = document.createElement('div');
+  content.className = 'photo-content';
+  viewport.appendChild(content);
+
   const img = document.createElement('img');
   img.className = 'detail-photo';
-  img.src = `file://${encodeURI(note.photoPath)}`;
-  detailPane.appendChild(img);
+  content.appendChild(img);
 
-  const textarea = document.createElement('textarea');
-  textarea.className = 'detail-text';
-  textarea.value = note.text || '';
-  detailPane.appendChild(textarea);
+  const highlight = document.createElement('div');
+  highlight.className = 'word-highlight';
+  highlight.hidden = true;
+  content.appendChild(highlight);
+
+  function applyTransform() {
+    content.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+    zoomLabel.textContent = `${Math.round(zoom * 100)}%`;
+  }
+
+  function zoomAtViewportPoint(cx, cy, factor) {
+    const newZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom * factor));
+    const contentX = (cx - panX) / zoom;
+    const contentY = (cy - panY) / zoom;
+    panX = cx - contentX * newZoom;
+    panY = cy - contentY * newZoom;
+    zoom = newZoom;
+    applyTransform();
+  }
+
+  zoomInBtn.addEventListener('click', () => {
+    const rect = viewport.getBoundingClientRect();
+    zoomAtViewportPoint(rect.width / 2, rect.height / 2, 1.25);
+  });
+  zoomOutBtn.addEventListener('click', () => {
+    const rect = viewport.getBoundingClientRect();
+    zoomAtViewportPoint(rect.width / 2, rect.height / 2, 1 / 1.25);
+  });
+  zoomResetBtn.addEventListener('click', () => {
+    zoom = 1;
+    panX = 0;
+    panY = 0;
+    applyTransform();
+  });
+  viewport.addEventListener(
+    'wheel',
+    (e) => {
+      e.preventDefault();
+      const rect = viewport.getBoundingClientRect();
+      zoomAtViewportPoint(e.clientX - rect.left, e.clientY - rect.top, e.deltaY < 0 ? 1.15 : 1 / 1.15);
+    },
+    { passive: false }
+  );
+  viewport.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    viewport.classList.add('dragging');
+    function onMove(moveEvent) {
+      panX += moveEvent.movementX;
+      panY += moveEvent.movementY;
+      applyTransform();
+    }
+    function onUp() {
+      viewport.classList.remove('dragging');
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+
+  img.onload = () => {
+    const viewportWidth = viewport.clientWidth || 1;
+    imgBaseWidth = viewportWidth;
+    imgBaseHeight = viewportWidth * (img.naturalHeight / img.naturalWidth);
+    img.style.width = `${imgBaseWidth}px`;
+    img.style.height = `${imgBaseHeight}px`;
+    content.style.width = `${imgBaseWidth}px`;
+    content.style.height = `${imgBaseHeight}px`;
+    zoom = 1;
+    panX = 0;
+    panY = 0;
+    applyTransform();
+  };
+  img.src = `file://${encodeURI(note.photoPath)}`;
+
+  function showHighlight(box) {
+    if (!box || !imgBaseWidth) return;
+    highlight.style.left = `${box.x0 * imgBaseWidth}px`;
+    highlight.style.top = `${box.y0 * imgBaseHeight}px`;
+    highlight.style.width = `${(box.x1 - box.x0) * imgBaseWidth}px`;
+    highlight.style.height = `${(box.y1 - box.y0) * imgBaseHeight}px`;
+    highlight.hidden = false;
+  }
+  function hideHighlight() {
+    highlight.hidden = true;
+  }
+
+  // ---- Text pane: hoverable word spans + edit toggle ----
+  const textPane = document.createElement('div');
+  textPane.className = 'detail-text-pane';
+  split.appendChild(textPane);
+
+  const textView = document.createElement('div');
+  textView.className = 'detail-text-view';
+  textView.dir = 'rtl';
+  textPane.appendChild(textView);
+
+  const textEdit = document.createElement('textarea');
+  textEdit.className = 'detail-text';
+  textEdit.hidden = true;
+  textPane.appendChild(textEdit);
+
+  function refreshTextView() {
+    lineTokenCounts = renderWordSpans(textView, note);
+  }
+  refreshTextView();
+
+  textView.addEventListener('mouseover', (e) => {
+    const span = e.target.closest('.word');
+    if (!span) return;
+    const box = computeHighlightBox(note, Number(span.dataset.line), Number(span.dataset.word), lineTokenCounts);
+    showHighlight(box);
+  });
+  textView.addEventListener('mouseout', (e) => {
+    if (!e.target.closest('.word')) return;
+    hideHighlight();
+  });
+
+  if (!note.lineBoxes) {
+    const note1 = document.createElement('p');
+    note1.className = 'muted small';
+    note1.textContent = 'Hover-to-highlight isn’t available for this note (it was transcribed as a whole page rather than line-by-line).';
+    textPane.insertBefore(note1, textView);
+  }
 
   const actions = document.createElement('div');
   actions.className = 'detail-actions';
+  textPane.appendChild(actions);
+
+  const editBtn = document.createElement('button');
+  editBtn.className = 'btn-secondary';
+  editBtn.textContent = 'Edit Text';
+  editBtn.addEventListener('click', () => {
+    editing = !editing;
+    if (editing) {
+      textEdit.value = note.text || '';
+      textView.hidden = true;
+      textEdit.hidden = false;
+      editBtn.textContent = 'Done Editing';
+    } else {
+      textView.hidden = false;
+      textEdit.hidden = true;
+      editBtn.textContent = 'Edit Text';
+    }
+  });
+  actions.appendChild(editBtn);
 
   const copyBtn = document.createElement('button');
   copyBtn.className = 'btn-primary';
   copyBtn.textContent = 'Copy to Clipboard';
   copyBtn.addEventListener('click', async () => {
-    await navigator.clipboard.writeText(textarea.value);
+    await navigator.clipboard.writeText(editing ? textEdit.value : note.text || '');
     copyBtn.textContent = 'Copied!';
     setTimeout(() => (copyBtn.textContent = 'Copy to Clipboard'), 1500);
   });
@@ -418,9 +661,15 @@ function selectNote(id) {
   saveBtn.className = 'btn-secondary';
   saveBtn.textContent = 'Save Edits';
   saveBtn.addEventListener('click', async () => {
-    await window.api.updateNoteText(note.id, textarea.value);
-    note.text = textarea.value;
+    const newText = textEdit.value;
+    await window.api.updateNoteText(note.id, newText);
+    note.text = newText;
     renderNotesList();
+    refreshTextView();
+    editing = false;
+    textView.hidden = false;
+    textEdit.hidden = true;
+    editBtn.textContent = 'Edit Text';
     saveBtn.textContent = 'Saved!';
     setTimeout(() => (saveBtn.textContent = 'Save Edits'), 1500);
   });
@@ -437,8 +686,6 @@ function selectNote(id) {
   deleteBtn.textContent = 'Delete Note';
   deleteBtn.addEventListener('click', () => confirmDelete(note.id));
   actions.appendChild(deleteBtn);
-
-  detailPane.appendChild(actions);
 }
 
 // ---------------------------------------------------------------------------

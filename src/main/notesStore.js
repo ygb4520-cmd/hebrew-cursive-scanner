@@ -67,7 +67,7 @@ function listNotes(chosenFolderPath) {
   return notes;
 }
 
-function createNote(chosenFolderPath, { imageBuffer, storedExtension, text }) {
+function createNote(chosenFolderPath, { imageBuffer, storedExtension, text, lineBoxes }) {
   const dir = ensureNotesRootDir(chosenFolderPath);
   const id = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const noteDir = path.join(dir, id);
@@ -82,6 +82,11 @@ function createNote(chosenFolderPath, { imageBuffer, storedExtension, text }) {
     text,
     imageFile,
     sourceMachine: os.hostname(),
+    // Fractional word/line boxes on the saved photo, used for the
+    // hover-a-word-to-see-it-on-the-photo feature. Absent (rather than
+    // null) when segmentation fell back to whole-page transcription, so
+    // older notes and this case both just render without that feature.
+    ...(lineBoxes ? { lineBoxes } : {}),
   };
   // Write meta.json last so a half-written note (e.g. Drive syncing mid-write)
   // is naturally skipped by listNotes() until it's complete.
