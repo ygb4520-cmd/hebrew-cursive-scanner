@@ -1,6 +1,18 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
 
+// Opt-in test-profile redirect, active only when HCS_TEST_USERDATA_DIR is
+// set at launch -- normal launches are completely unaffected. Points every
+// path this app reads/writes through app.getPath('userData') (settings,
+// the encrypted API key, note metadata's own cache, Chromium's profile
+// data) at a throwaway directory instead of the real one, so automated
+// UI testing (see .claude/skills/run-hebrew-cursive-scanner-app) never
+// touches your real saved notes, settings, or API key. Must run before
+// anything else in this file calls app.getPath('userData').
+if (process.env.HCS_TEST_USERDATA_DIR) {
+  app.setPath('userData', process.env.HCS_TEST_USERDATA_DIR);
+}
+
 const settingsStore = require('./store');
 const apiKeyStore = require('./apiKeyStore');
 const {
