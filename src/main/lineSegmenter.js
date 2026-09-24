@@ -257,6 +257,21 @@ function findLineBands(rowInkCounts, height, contentWidth) {
     Math.min(height - 1, end + padding),
   ]);
 
+  // Padding each band independently can make neighbors overlap when they
+  // were close together to begin with -- confirmed live (two real lines a
+  // couple pixels apart in `merged` ended up with overlapping padded
+  // ranges), which would hand two different line numbers overlapping
+  // regions of the same photo to every downstream consumer (the app's own
+  // word-highlight feature included). Split any resulting overlap at the
+  // midpoint of the original, unpadded gap.
+  for (let i = 0; i < padded.length - 1; i++) {
+    if (padded[i][1] >= padded[i + 1][0]) {
+      const mid = Math.floor((merged[i][1] + merged[i + 1][0]) / 2);
+      padded[i][1] = mid;
+      padded[i + 1][0] = mid + 1;
+    }
+  }
+
   return { bands: padded, rawBands: merged };
 }
 

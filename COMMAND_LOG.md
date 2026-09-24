@@ -551,3 +551,32 @@ computer where the only copy of that project's source code lives.
   separate, pre-existing failure mode (the same error hit the very first test page's last line
   too) -- not something this fix caused, and not in scope for this pass.
 - Version bumped 0.3.3 -> 0.3.4 for this release.
+
+### Extended the Mishkefet comparison to 4 pages, found + fixed a padding-overlap bug (v0.3.5)
+
+- Re-segmented and re-transcribed (both Gemini and Mishkefet-v1) all 4 scanned pages using the
+  now-fixed segmenter, and extended the `Ktav Cross-Check` Artifact to cover all 4 with a combined
+  tally and per-line verdict picker. Page 3 partly hit Gemini's free-tier *daily* request quota
+  mid-transcription (distinct from the per-minute limit found earlier this project) -- those
+  specific lines are marked "not tested" in the comparison rather than scored as a loss.
+- User caught a real bug from the artifact alone: two line-number badges on the photo overlaid
+  each other illegibly. Root cause, confirmed by inspecting the actual data: `findLineBands`'s
+  padding step (Pass 4, ascender/descender padding) padded each band independently with no check
+  against its neighbor -- two real lines close enough together ended up with overlapping padded
+  ranges, which is a real bug in the segmenter itself (not just the comparison page), since the
+  app's own word-highlight feature depends on non-overlapping line boxes too. Fixed by capping any
+  resulting overlap at the midpoint of the original, unpadded gap.
+- While diagnosing, found a second, distinct, and still-unresolved issue: on some pages one merged
+  band spans 50%+ of the entire page (confirmed: every real gap inside that span measured 5-13px,
+  all under the fixed 12px "bridge small gaps" threshold -- this page's actual line spacing is
+  simply tighter than that fixed constant assumed). Attempted an adaptive per-page threshold reusing
+  the same "biggest gap-ratio jump" trick `findWordBands` already uses for letter-vs-word gaps --
+  tested it against all 7 real images before committing to it, and it made things measurably worse
+  (page1 dropped from 7 confident lines to 2; page3 from 11 to 2), because a whole page's row-gaps
+  have more than two populations (intra-line noise, real inter-line gaps, paragraph breaks), so the
+  single biggest jump can land at the wrong boundary. Reverted immediately rather than ship a
+  regression. This specific issue (occasional oversized merged bands) is real and still open --
+  needs a more careful design (likely windowed/local gap analysis, or estimating typical line pitch
+  from the page's own successfully-split regions) rather than a whole-page gap-ratio heuristic.
+- Version bumped 0.3.4 -> 0.3.5 for this release (the overlap fix only -- verified against all 7
+  real test images with no regressions before shipping).
