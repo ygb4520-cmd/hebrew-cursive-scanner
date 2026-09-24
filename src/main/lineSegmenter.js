@@ -13,12 +13,31 @@
 // order/density. So: do the segmentation ourselves, and let Gemini do what
 // it's actually good at — one line at a time.
 //
-// Approach: classic ink-density projection, done twice. First horizontally
-// (row brightness) to find lines, exactly as before. Then, within each
-// line's row range, vertically (column brightness) to find word-sized ink
-// clusters. No external OCR/CV library — plain pixel math over a raw
-// buffer, which is fast enough (a few hundred ms) even at full photo
-// resolution.
+// Approach (rewritten 2026-09-23 after a real, longstanding under-counting
+// bug -- see below): binarize the page with Otsu's method, trim dense
+// artifact borders, then project INK PIXEL COUNTS (not average brightness)
+// across rows to find lines, and across columns within each line to find
+// word-sized chunks. No external OCR/CV library — plain pixel math over a
+// raw buffer, fast even at full photo resolution.
+//
+// The bug this replaced: the original approach averaged raw brightness
+// across each full row/column. That's fatally diluted by real handwriting,
+// where any given row is mostly blank paper with a few thin ink strokes --
+// averaging brightness across ~2000+ mostly-white pixels barely moves the
+// mean, so real text rows and true blank gaps ended up looking nearly
+// identical. Confirmed live on a genuinely broken page (found only 2 of a
+// visually-obvious ~20+ lines): a second, independent problem compounded
+// it -- narrow dark strips along the page's own edges (binder/scan-crop
+// artifacts, confirmed via real per-column ink measurements: ~67% ink
+// density in the leftmost columns vs 1-5% in the real text columns) added
+// a near-constant "ink" offset to every single row, so the algorithm could
+// never find a genuinely blank gap between lines at all. Counting actual
+// ink PIXELS (via a proper binarization threshold) instead of averaging
+// brightness, and trimming those artifact borders before counting, fixed
+// both: tested against 5 real pages, one page went from 0 confident bands
+// (total failure, silently fell back to whole-page) to 11; another from 2
+// to 7; a page that already worked went from 15 bands to 13 (a small,
+// acceptable regression against a large net fix elsewhere).
 //
 // Known limitation on the word split specifically: Hebrew cursive letters
 // are mostly NOT connected to each other within a word (unlike English
@@ -44,9 +63,30 @@ const MIN_LINE_HEIGHT_FRACTION = 0.006; // ignore ink bands shorter than this (n
 const MAX_GAP_TO_BRIDGE_FRACTION = 0.004; // bridge small gaps within one line (e.g. below a dot)
 const MIN_GAP_BETWEEN_LINES_FRACTION = 0.006; // merge bands closer than this (likely one line)
 const PADDING_FRACTION = 0.01; // expand each final line band for ascenders/descenders
-const INK_DELTA = 12; // a row/column counts as "ink" if its avg brightness is at least this much
-// darker than the blankest rows measured on this specific photo (adaptive,
-// not a fixed absolute threshold, since lighting/exposure varies per photo).
+
+// A row counts as "text" if at least this fraction of the page's content
+// width is made of ink pixels. Small on purpose -- Hebrew handwriting is
+// sparse per row, so this only needs to clear genuine noise, not match
+// how "full" a printed text line would look.
+const ROW_INK_FRACTION = 0.003;
+// Same idea per column, but relative to a single line's height instead of
+// the whole page (word-splitting only ever looks within one line's rows).
+const COL_INK_FRACTION = 0.12;
+
+// Edges (either axis) are trimmed inward while their full-length ink
+// density stays above this -- real handwriting never blackens more than a
+// small fraction of a full row/column, so anything denser than this for a
+// sustained run is a page-edge/binder/scan-crop artifact, not text.
+const EDGE_ARTIFACT_DENSITY_FRACTION = 0.12;
+const EDGE_SMOOTH_WINDOW = 9; // avoids a single anti-aliased boundary pixel faking an early stop
+// Safety limit: never trim more than this fraction of the image from a single edge, no matter
+// how long the dense run continues. Confirmed live on a real dark/poorly-lit photo -- without
+// this cap, a photo that's densely "inky" almost everywhere (not just at a genuine border
+// artifact) walked the trim all the way to a 1x1 remainder and failed completely. A real
+// border artifact is always a narrow strip; something denser than that for longer than this
+// isn't a border anymore, it's just a hard photo, and trimming further would eat real content
+// instead of protecting it.
+const MAX_EDGE_TRIM_FRACTION = 0.2;
 
 // Word-band tuning (fractions of image WIDTH unless noted).
 const WORD_PADDING_FRACTION = 0.003; // small box padding around each detected word
@@ -64,30 +104,37 @@ async function getGrayscaleRaw(buffer) {
   return { data, width: info.width, height: info.height };
 }
 
-function computeRowInkScores(data, width, height) {
-  const rowScores = new Float64Array(height); // average brightness per row, 0=black 255=white
-  for (let y = 0; y < height; y++) {
-    let sum = 0;
-    const rowStart = y * width;
-    for (let x = 0; x < width; x++) {
-      sum += data[rowStart + x];
-    }
-    rowScores[y] = sum / width;
-  }
-  return rowScores;
-}
+// Otsu's method: picks the brightness cutoff that best splits this
+// specific image's own histogram into an "ink" cluster and a "paper"
+// cluster, instead of assuming one fixed threshold works across every
+// camera, scanner, and lighting condition.
+function otsuThreshold(data) {
+  const histogram = new Array(256).fill(0);
+  for (let i = 0; i < data.length; i++) histogram[data[i]]++;
+  const total = data.length;
 
-function computeColumnInkScores(data, width, rowTop, rowBottom) {
-  const colScores = new Float64Array(width);
-  const rowCount = rowBottom - rowTop + 1;
-  for (let x = 0; x < width; x++) {
-    let sum = 0;
-    for (let y = rowTop; y <= rowBottom; y++) {
-      sum += data[y * width + x];
+  let sumAll = 0;
+  for (let t = 0; t < 256; t++) sumAll += t * histogram[t];
+
+  let sumBelow = 0;
+  let weightBelow = 0;
+  let bestVariance = 0;
+  let threshold = 0;
+  for (let t = 0; t < 256; t++) {
+    weightBelow += histogram[t];
+    if (weightBelow === 0) continue;
+    const weightAbove = total - weightBelow;
+    if (weightAbove === 0) break;
+    sumBelow += t * histogram[t];
+    const meanBelow = sumBelow / weightBelow;
+    const meanAbove = (sumAll - sumBelow) / weightAbove;
+    const betweenVariance = weightBelow * weightAbove * (meanBelow - meanAbove) * (meanBelow - meanAbove);
+    if (betweenVariance > bestVariance) {
+      bestVariance = betweenVariance;
+      threshold = t;
     }
-    colScores[x] = sum / rowCount;
   }
-  return colScores;
+  return threshold;
 }
 
 function smooth(scores, windowSize) {
@@ -105,23 +152,65 @@ function smooth(scores, windowSize) {
   return out;
 }
 
-function percentileBrightness(smoothedScores, percentile) {
-  const sorted = Array.from(smoothedScores).sort((a, b) => b - a);
-  return sorted[Math.floor(sorted.length * percentile)];
+// Walks inward from both ends of `counts` (one entry per row or column)
+// while its smoothed ink density stays above a "no real handwriting is
+// this dense" ceiling, and returns the [lo, hi] range of what's left --
+// the actual content area, with edge artifacts (binder holes, scan-crop
+// shadow, page border) excluded. Smoothing first matters: the very
+// boundary pixel of a scan is often anti-aliased lighter than the solid
+// artifact just inside it, which would otherwise fake an early stop.
+function trimDenseEdges(counts, densityDenominator, maxFraction, smoothWindow) {
+  const smoothed = smooth(counts, smoothWindow);
+  const cap = densityDenominator * maxFraction;
+  const maxTrimEach = Math.floor(smoothed.length * MAX_EDGE_TRIM_FRACTION);
+
+  let lo = 0;
+  while (lo < maxTrimEach && smoothed[lo] > cap) lo++;
+
+  let hi = smoothed.length - 1;
+  const minHi = Math.max(lo, smoothed.length - 1 - maxTrimEach);
+  while (hi > minHi && smoothed[hi] > cap) hi--;
+
+  return [lo, hi];
 }
 
-// Returns { bands, rawBands, paperBaseline }. `bands` are the final,
-// padded line boxes (used for the crop + display). `rawBands` are the
-// same bands *before* padding (used for word-splitting, so a neighboring
-// line's descender/ascender ink pulled in by padding doesn't skew the
-// column brightness math).
-function findLineBands(rowScores, height) {
-  const smoothed = smooth(rowScores, 5);
-  const paperBaseline = percentileBrightness(smoothed, 0.05); // 95th-percentile brightness
+function computeRowInkCounts(data, width, height, threshold, colStart, colEnd) {
+  const counts = new Float64Array(height);
+  for (let y = 0; y < height; y++) {
+    let count = 0;
+    const rowStart = y * width;
+    for (let x = colStart; x <= colEnd; x++) {
+      if (data[rowStart + x] < threshold) count++;
+    }
+    counts[y] = count;
+  }
+  return counts;
+}
+
+function computeColumnInkCounts(data, width, threshold, rowTop, rowBottom, colStart, colEnd) {
+  const counts = new Float64Array(width);
+  for (let x = colStart; x <= colEnd; x++) {
+    let count = 0;
+    for (let y = rowTop; y <= rowBottom; y++) {
+      if (data[y * width + x] < threshold) count++;
+    }
+    counts[x] = count;
+  }
+  return counts;
+}
+
+// Returns { bands, rawBands }. `bands` are the final, padded line boxes
+// (used for the crop + display). `rawBands` are the same bands *before*
+// padding (used for word-splitting, so a neighboring line's
+// descender/ascender ink pulled in by padding doesn't skew the column
+// ink-count math).
+function findLineBands(rowInkCounts, height, contentWidth) {
+  const smoothed = smooth(rowInkCounts, 5);
+  const minInkPixels = Math.max(2, contentWidth * ROW_INK_FRACTION);
 
   const hasInk = new Array(height);
   for (let y = 0; y < height; y++) {
-    hasInk[y] = paperBaseline - smoothed[y] >= INK_DELTA;
+    hasInk[y] = smoothed[y] >= minInkPixels;
   }
 
   const maxGap = Math.max(3, Math.round(height * MAX_GAP_TO_BRIDGE_FRACTION));
@@ -168,17 +257,18 @@ function findLineBands(rowScores, height) {
     Math.min(height - 1, end + padding),
   ]);
 
-  return { bands: padded, rawBands: merged, paperBaseline };
+  return { bands: padded, rawBands: merged };
 }
 
-// Splits one line's column-brightness profile into word-sized pixel
+// Splits one line's column-ink-count profile into word-sized pixel
 // ranges, returned LEFT-TO-RIGHT as [left, right] pixel pairs. See the
 // file header for the letter-gap-vs-word-gap heuristic.
-function findWordBands(colScores, width, paperBaseline) {
-  const smoothed = smooth(colScores, 3);
+function findWordBands(colInkCounts, width, lineHeight) {
+  const smoothed = smooth(colInkCounts, 3);
+  const minInkPixels = Math.max(1, lineHeight * COL_INK_FRACTION);
   const hasInk = new Array(width);
   for (let x = 0; x < width; x++) {
-    hasInk[x] = paperBaseline - smoothed[x] >= INK_DELTA;
+    hasInk[x] = smoothed[x] >= minInkPixels;
   }
 
   let inkStart = -1;
@@ -274,9 +364,35 @@ async function cleanUpCrop(sharpImage) {
 // should fall back to sending the whole page as one image in that case).
 async function segmentIntoLines(buffer) {
   const { data, width, height } = await getGrayscaleRaw(buffer);
-  const rowScores = computeRowInkScores(data, width, height);
-  const { bands, rawBands, paperBaseline } = findLineBands(rowScores, height);
+  const threshold = otsuThreshold(data);
 
+  // Find the real content area first, so page-edge artifacts (binder
+  // holes, scan-crop shadow, a strip of background at the border) never
+  // get counted as ink -- see the file header for why this matters.
+  const colCountsFullHeight = computeColumnInkCounts(data, width, threshold, 0, height - 1, 0, width - 1);
+  const rowCountsFullWidth = computeRowInkCounts(data, width, height, threshold, 0, width - 1);
+  const [contentLeft, contentRight] = trimDenseEdges(
+    colCountsFullHeight,
+    height,
+    EDGE_ARTIFACT_DENSITY_FRACTION,
+    EDGE_SMOOTH_WINDOW
+  );
+  const [contentTop, contentBottom] = trimDenseEdges(
+    rowCountsFullWidth,
+    width,
+    EDGE_ARTIFACT_DENSITY_FRACTION,
+    EDGE_SMOOTH_WINDOW
+  );
+  const contentWidth = contentRight - contentLeft + 1;
+
+  const rowInkCounts = computeRowInkCounts(data, width, height, threshold, contentLeft, contentRight);
+  // Zero out rows outside the trimmed vertical content range so a
+  // top/bottom artifact can't seed a spurious band there.
+  for (let y = 0; y < height; y++) {
+    if (y < contentTop || y > contentBottom) rowInkCounts[y] = 0;
+  }
+
+  const { bands, rawBands } = findLineBands(rowInkCounts, height, contentWidth);
   if (bands.length < 2) return null;
 
   const rotated = sharp(buffer).rotate();
@@ -289,9 +405,9 @@ async function segmentIntoLines(buffer) {
       rotated.clone().extract({ left: 0, top, width, height: cropHeight })
     );
 
-    const colScores = computeColumnInkScores(data, width, rawTop, rawBottom);
+    const colInkCounts = computeColumnInkCounts(data, width, threshold, rawTop, rawBottom, contentLeft, contentRight);
     const wordPadding = Math.max(1, Math.round(width * WORD_PADDING_FRACTION));
-    const wordBandsLtr = findWordBands(colScores, width, paperBaseline);
+    const wordBandsLtr = findWordBands(colInkCounts, width, rawBottom - rawTop + 1);
     // Reverse to right-to-left order to match Hebrew reading order (the
     // rightmost visual word is the first word in the transcribed string).
     const wordBoxes = wordBandsLtr
@@ -307,4 +423,4 @@ async function segmentIntoLines(buffer) {
   return { width, height, lines };
 }
 
-module.exports = { segmentIntoLines, findLineBands, findWordBands, computeRowInkScores };
+module.exports = { segmentIntoLines, findLineBands, findWordBands, otsuThreshold, trimDenseEdges };

@@ -498,3 +498,56 @@ computer where the only copy of that project's source code lives.
     now at least see which LINE and roughly where a bad transcription came from on the actual
     page, which is the debugging visibility the user actually asked for).
   - Version bumped 0.3.2 -> 0.3.3 for this release.
+
+### Mishkefet-v1 real-page evaluation + a real, longstanding line-segmentation bug fixed (v0.3.4)
+
+- User asked to evaluate Mishkefet-v1 (the open Hebrew HTR model researched previously) against
+  real handwriting, not just the benchmark. Built a throwaway Python venv (via `uv`, no admin
+  needed) with the released weights, ran it against the same real note used earlier, and built
+  an Artifact (`Ktav Cross-Check`) showing the photo (with segmenter-derived line markers, zoom)
+  next to both models' output per line, with a per-line "which is better" picker and running
+  tally, persisted via localStorage. User's verdict across 15 real lines: Mishkefet-v1 better on
+  10, Gemini on 2, 3 unclear. User's own theory for *why*: Mishkefet "only reads letters," missing
+  punctuation/abbreviation marks. Confirmed by checking the model's actual `charset.json`: it has
+  plain ASCII `"`/`'` but no Hebrew גרשיים/גרש (the real marks rabbinic abbreviations use), and
+  empirically never emits parentheses either even though they're in-vocabulary -- a real,
+  evidenced architectural gap, not a guess.
+- To get more than one real page to test with, walked through capture-method advice (camera vs.
+  scan; recommended iPhone's built-in Notes/Files "Scan Documents" over a photo, since it
+  auto-corrects exactly the failure modes that have caused real bugs here: perspective skew,
+  uneven lighting, background clutter). User scanned a 4-page PDF.
+- Rendering those 4 pages and running them through the app's own `segmentIntoLines` surfaced a
+  **real, longstanding bug the user confirmed was never actually fixed** ("it was always a prob
+  never found all lines"): one page found 0 of ~12 visible lines (silently fell back to
+  whole-page), another found 2 of what should have been far more. Root-caused via direct pixel
+  measurement (not guessing) to two compounding problems in the original row-brightness-averaging
+  approach: (1) averaging brightness across a full ~2000+px-wide row dilutes real handwriting
+  ink almost to nothing, since most of any given row is blank paper; (2) narrow dark artifact
+  strips along the page's own edges (binder/scan-crop shadow -- measured at ~67% "ink" density in
+  the leftmost columns vs. 1-5% in real text columns) added a near-constant ink floor to every
+  row, so a truly blank gap between lines could never be detected at all.
+- Rewrote `lineSegmenter.js`'s core: Otsu's method (auto-picks the brightness cutoff that best
+  splits *that specific image's* histogram, instead of one fixed number across every camera/scan)
+  for binarization, then projects actual ink PIXEL COUNTS (not averaged brightness) across rows
+  to find lines and across columns within each line to find words, with dense page-edge borders
+  trimmed first so artifacts can't poison the count. Tested against 5 real pages before touching
+  the real file: one page went from 0 confident bands to 11, another from 2 to 7, one page that
+  already worked went from 15 to 13 (small, disclosed regression, net strongly positive).
+- **User then asked "any reason not to ship" -- and that question itself caught a real bug**:
+  testing against actual camera-photo JPEGs (not scans) found one photo where the edge-trim step,
+  with no limit on how far it could walk inward, collapsed an entire 4032x3024 image down to a
+  1x1 remainder (that specific photo has severe background/lighting problems -- even its least-inky
+  rows measured 46%+ "ink" density). Added `MAX_EDGE_TRIM_FRACTION` (20% cap per edge) so a
+  pathologically dense/poorly-lit photo degrades to the existing, already-tested whole-page
+  fallback instead of collapsing. Re-verified all 7 real test images (4 scans, 1 PDF-render, 2
+  camera JPEGs) after the fix: no more collapses, no other regressions. This is the second time
+  this session a "let's ship it" moment surfaced a real bug on the next check rather than after
+  release -- worth remembering to always test the actual worst-looking real input before shipping
+  a segmentation/threshold change, not just the inputs already known to be reasonably clean.
+- Verified end-to-end (not just unit-level): ran the real `transcribeByLines` pipeline via a
+  throwaway Electron harness (reusing the real saved API key, never exposed) against the
+  previously-0-lines page -- correctly segmented into 11 lines and attempted real transcription on
+  all of them. 6 of 11 came back as Gemini's own "returned no transcribed text" error, which is a
+  separate, pre-existing failure mode (the same error hit the very first test page's last line
+  too) -- not something this fix caused, and not in scope for this pass.
+- Version bumped 0.3.3 -> 0.3.4 for this release.
