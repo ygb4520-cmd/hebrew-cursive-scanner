@@ -448,11 +448,12 @@ async function confirmDelete(id) {
 // disconnected, so the local ink-cluster count computed from the photo
 // (see lineSegmenter.js) frequently doesn't match the number of words
 // Gemini actually transcribed for that line. When it matches, hovering a
-// word highlights exactly that ink cluster. When it doesn't, the highlight
-// falls back to an approximate position (proportional placement among the
-// clusters that were found) within a precise line-height band -- not a
-// promise of the exact word, just a narrowed-down area instead of the
-// whole line every time.
+// word highlights exactly that ink cluster, using that word's own vertical
+// ink extent (not the whole line's height). When it doesn't, the highlight
+// falls back to whichever detected cluster covers this word's proportional
+// position along the clusters' combined pixel width (see
+// closestBoxByPosition) -- not a promise of the exact word, just a
+// narrowed-down area instead of the whole line every time.
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 6;
 
@@ -467,10 +468,42 @@ function computeHighlightBox(note, lineIndex, wordIndex, lineTokenCounts) {
     return { x0: 0, x1: 1, y0: line.top, y1: line.bottom };
   }
   if (wordBoxes.length === tokenCount) {
-    return { x0: wordBoxes[wordIndex].left, x1: wordBoxes[wordIndex].right, y0: line.top, y1: line.bottom };
+    const box = wordBoxes[wordIndex];
+    // Each word's own ink extent, not the whole line's -- a short word
+    // shouldn't highlight a tall neighbor's ascender/descender space.
+    return { x0: box.left, x1: box.right, y0: box.top ?? line.top, y1: box.bottom ?? line.bottom };
   }
-  const boxIndex = Math.min(wordBoxes.length - 1, Math.floor((wordIndex / tokenCount) * wordBoxes.length));
-  return { x0: wordBoxes[boxIndex].left, x1: wordBoxes[boxIndex].right, y0: line.top, y1: line.bottom };
+  const boxIndex = closestBoxByPosition(wordBoxes, wordIndex, tokenCount);
+  const box = wordBoxes[boxIndex];
+  return { x0: box.left, x1: box.right, y0: box.top ?? line.top, y1: box.bottom ?? line.bottom };
+}
+
+// Approximate matching for when the detected ink-cluster count doesn't
+// match the transcribed word count (a merge or split happened somewhere,
+// see the file header). Maps this word's proportional position in the text
+// onto the detected clusters' combined PIXEL span, then picks whichever
+// cluster actually covers that position -- weighted by how wide each
+// cluster really is, so a cluster that's visibly two merged words draws
+// more of the fallback's attention than a single short word does, instead
+// of every detected cluster counting as one equal "slot" regardless of size.
+function closestBoxByPosition(wordBoxes, wordIndex, tokenCount) {
+  // wordBoxes is RTL-ordered (index 0 = rightmost = first word), so the
+  // array's own first/last entries are NOT the leftmost/rightmost x
+  // extremes -- take the real min/max across all boxes instead, and walk
+  // from xMax down to xMin as wordIndex increases.
+  const xMin = Math.min(...wordBoxes.map((b) => b.left));
+  const xMax = Math.max(...wordBoxes.map((b) => b.right));
+  const target = xMax - ((wordIndex + 0.5) / tokenCount) * (xMax - xMin);
+
+  let bestIndex = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < wordBoxes.length; i++) {
+    const b = wordBoxes[i];
+    const dist = target < b.left ? b.left - target : target > b.right ? target - b.right : 0;
+    if (dist < bestDist) { bestDist = dist; bestIndex = i; }
+    if (dist === 0) break;
+  }
+  return bestIndex;
 }
 
 // Renders `note.text` into `container` as hoverable per-word spans, and

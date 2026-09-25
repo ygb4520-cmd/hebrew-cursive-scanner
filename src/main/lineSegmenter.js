@@ -188,6 +188,29 @@ function computeRowInkCounts(data, width, height, threshold, colStart, colEnd) {
   return counts;
 }
 
+// Tightest [top, bottom] pixel rows (absolute, within rowTop..rowBottom)
+// where this specific word's own columns have any ink -- used to give each
+// word's highlight box real vertical bounds instead of reusing the whole
+// line's height for every word regardless of ascenders/descenders.
+function findWordVerticalExtent(data, width, threshold, rowTop, rowBottom, colLeft, colRight) {
+  let top = -1;
+  let bottom = -1;
+  for (let y = rowTop; y <= rowBottom; y++) {
+    const rowStart = y * width;
+    let hasInk = false;
+    for (let x = colLeft; x <= colRight; x++) {
+      if (data[rowStart + x] < threshold) { hasInk = true; break; }
+    }
+    if (hasInk) {
+      if (top === -1) top = y;
+      bottom = y;
+    }
+  }
+  // Shouldn't happen (the word band was itself found from ink in this
+  // range), but fall back to the full line range rather than an invalid box.
+  return top === -1 ? [rowTop, rowBottom] : [top, bottom];
+}
+
 function computeColumnInkCounts(data, width, threshold, rowTop, rowBottom, colStart, colEnd) {
   const counts = new Float64Array(width);
   for (let x = colStart; x <= colEnd; x++) {
@@ -394,10 +417,19 @@ async function buildLinesFromBands(buffer, data, width, height, threshold, conte
     const wordBoxes = wordBandsLtr
       .slice()
       .reverse()
-      .map(([left, right]) => ({
-        left: Math.max(0, left - wordPadding) / width,
-        right: Math.min(width - 1, right + wordPadding + 1) / width,
-      }));
+      .map(([left, right]) => {
+        // Real per-word vertical extent (a short word like a 2-letter
+        // abbreviation shouldn't highlight the full height of a line that
+        // also contains a tall ascender/descender elsewhere) instead of
+        // reusing the whole line's top/bottom for every word.
+        const [wordTop, wordBottom] = findWordVerticalExtent(data, width, threshold, rawTop, rawBottom, left, right);
+        return {
+          left: Math.max(0, left - wordPadding) / width,
+          right: Math.min(width - 1, right + wordPadding + 1) / width,
+          top: wordTop / height,
+          bottom: (wordBottom + 1) / height,
+        };
+      });
 
     lines.push({ image, top, bottom, wordBoxes });
   }
@@ -406,12 +438,15 @@ async function buildLinesFromBands(buffer, data, width, height, threshold, conte
 
 // Returns { width, height, lines }, where each line is
 // { image: {mimeType,data}, top, bottom, wordBoxes }. `top`/`bottom` are
-// pixel rows in the (post-rotation) source image; `wordBoxes` is an array
-// of { left, right } fractions of the image WIDTH, in reading order
-// (rightmost-first, since Hebrew reads right-to-left) — matching the order
-// words appear in the transcribed text string. Returns null if
-// segmentation didn't find anything confident enough to trust (caller
-// should fall back to sending the whole page as one image in that case).
+// pixel rows in the (post-rotation) source image; `wordBoxes` is an array of
+// { left, right, top, bottom } fractions of the image WIDTH/HEIGHT, in
+// reading order (rightmost-first, since Hebrew reads right-to-left) --
+// matching the order words appear in the transcribed text string. Each
+// word's own top/bottom come from that word's actual ink extent (not
+// reused from the whole line), so a short word doesn't highlight a tall
+// neighbor's ascender/descender space. Returns null if segmentation didn't
+// find anything confident enough to trust (caller should fall back to
+// sending the whole page as one image in that case).
 async function segmentIntoLines(buffer) {
   const { data, width, height } = await getGrayscaleRaw(buffer);
   const threshold = otsuThreshold(data);
