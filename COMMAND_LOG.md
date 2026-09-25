@@ -580,3 +580,162 @@ computer where the only copy of that project's source code lives.
   from the page's own successfully-split regions) rather than a whole-page gap-ratio heuristic.
 - Version bumped 0.3.4 -> 0.3.5 for this release (the overlap fix only -- verified against all 7
   real test images with no regressions before shipping).
+
+### Ktav Cross-Check follow-up: two more real bugs found by the user, both fixed; then deleted
+
+- Extended the artifact to all 4 pages with a combined tally; user found the ruler numbers were
+  garbled on the photo. Root cause #1: `findLineBands`'s ascender/descender padding step padded
+  each band independently with no check against its neighbor, so two close-together real lines
+  could end up with overlapping padded ranges -- a real bug in the segmenter itself, not just the
+  artifact (this is the same fix that shipped as v0.3.5 above). Root cause #2, found only after the
+  user sent zoomed screenshots proving numbers were *still* missing in a wider/maximized artifact
+  view even though a narrower split-view of the same artifact showed them fine: the ruler's width
+  was being measured live via `getBoundingClientRect()` before setting the image's pixel width --
+  that measurement raced the browser's own layout pass in some rendering contexts and read back 0,
+  silently reproducing the bug. Fixed properly by removing the JS calculation entirely and using
+  CSS Grid (`grid-template-columns: 1fr 22px`) to let the browser divide the space declaratively --
+  structurally impossible to race since there's no longer a value to measure. Verified at narrow,
+  wide, and iframe-embedded contexts (matching how claude.ai actually renders artifacts) before
+  trusting it this time, after two real premature "it's fixed" claims that both turned out wrong.
+  **Lesson explicitly logged**: a screenshot glanced at is not verification, even coming from
+  Claude's own read of an image -- zooming in on "circle the numbers" is what caught the second
+  bug had NOT actually been visible, contradicting an earlier claim made from an unzoomed look.
+- User also asked to make the photo bigger ("resize to where my cursor is" turned out, after
+  clarifying via AskUserQuestion, to mean "make the photo box itself bigger," not cursor-anchored
+  zoom) -- widened the photo column's max width 340px -> 560px and bumped badge size slightly,
+  verified badges still fit their slots at the new size before shipping.
+- After all of this, the user's own substantive verdict on going through more of the real
+  comparison (not UI-related, this took me two guesses to understand -- "too close both horrible"
+  meant Gemini vs Mishkefet-v1 quality is a close, bad-quality tie across real pages, reversing the
+  earlier single-page 10-2-3 result in Mishkefet's favor): **neither off-the-shelf model is
+  actually good on this handwriting** -- the bottleneck isn't which generic model to pick, it's
+  that neither is trained on this specific handwriting. This reframed the whole thread toward
+  personalization (fine-tuning/few-shot) rather than model selection.
+- User then asked to delete the artifact entirely once done with it -- confirmed only one artifact
+  existed this session (`action: list`) and deleted it as asked.
+
+### Playwright-based visual-testing harness for the real app (built, shipped, not versioned)
+
+- Separately, built a way to actually launch and click through the real Electron app and get real
+  screenshots -- Playwright has native Electron support (launches the app, hands back the real
+  BrowserWindow as a normal page), so unlike a native app (Catan's bespoke DebugDriver, which had to
+  render in-process specifically to avoid needing macOS Screen Recording permission), no custom
+  protocol was needed here at all.
+- `src/main/main.js`: tiny opt-in `HCS_TEST_USERDATA_DIR` env-var check (inert unless set) that
+  redirects `app.getPath('userData')` to a throwaway directory, so automated testing can never touch
+  real saved notes/settings/API key.
+- `scripts/debug-launch.js` (reusable `launchApp()`) + `scripts/debug-example.js` (working smoke
+  test) + `.claude/skills/run-hebrew-cursive-scanner-app/SKILL.md` documenting it for future
+  sessions. Verified live: real screenshot of the setup banner, real click on Settings, real
+  screenshot of the resulting modal. Committed and pushed (dev-only tooling, electron-builder never
+  bundles `scripts/` or `.claude/`, so no version bump needed).
+- Documented in the skill file itself: prefer querying the DOM (`getBoundingClientRect`,
+  `$$eval`) over eyeballing a screenshot when checking a fact rather than genuinely needing to see
+  something -- directly informed by the ruler-overlap bug above, which a screenshot alone didn't
+  reliably reveal.
+
+### Few-shot Gemini examples feature -- built and verified, deliberately NOT committed yet
+
+User asked for "Path A" from an earlier options discussion (fine-tune Mishkefet vs. few-shot
+Gemini examples) with explicit instruction: build it, but hold off on `git commit` until the user
+says their real example pages/lines are ready.
+- `src/main/fewShotExamples/README.md` -- the convention (numbered image+`.txt` pairs, up to 5
+  used, silently skips an unmatched pair rather than erroring).
+- `src/main/fewShot.js` -- loader, cached after first read, returns `[]` (safe no-op) when the
+  folder has no valid pairs.
+- `src/main/gemini.js` -- `generateContent` now accepts `fewShotExamples` and builds a multi-turn
+  `contents` array (each example as a user/model turn pair ahead of the real request);
+  `transcribeLine` loads and passes them.
+- Verified end-to-end for real: copied two real line crops + typed corrections into the folder,
+  ran a live `transcribeLine()` call through the real (never-seen) API key, confirmed Gemini
+  accepted the multi-turn request and returned a transcription, then deleted the test files
+  (they were only for proving the mechanism, not real curated examples) and reconfirmed the loader
+  returns to empty/no-op. `git status` confirms nothing is staged, per the user's explicit hold.
+
+### Line-segmentation: four more real fix attempts on a new 30+-line page, all failed and reverted
+
+User is preparing real few-shot example line-crops from an AirDropped 30+-line real page, which
+immediately exposed that the segmentation bug from earlier (occasional oversized merged bands) is
+worse than previously scoped -- the current algorithm found only **11 bands on a page with 30+
+real lines** (largest single band spanning 40% of the page), and the user confirmed it's "not just
+merging, it's also not reading all the lines."
+
+Brainstormed three real directions (line-pitch estimation, real connected-component detection, a
+manual nudge tool in the app) and, per explicit instruction to test before trusting an idea again
+after the earlier reverted regression, tried the most promising one four different ways --
+**all four tested against this real page (plus known-good pages, to check for regressions) and
+explicitly discarded, nothing shipped**:
+1. Autocorrelation on the row-ink signal to find the dominant line pitch -- locked onto the wrong
+   periodicity (441px, implying ~7 lines on a 30+ line page); autocorrelation's known failure mode
+   on pulse-like signals (narrow ink bursts in wide blank gaps) is it can lock onto the *wrong*
+   period rather than the true fundamental one.
+2. Peak-finding on a heavily smoothed row-ink signal, measuring median peak-to-peak spacing --
+   gave suspiciously near-identical pitch estimates (~73-86px) across three pages with very
+   different real line counts, meaning it was finding sub-line structure, not true line centers.
+3. Same peak-finding with a minimum-prominence filter (the standard fix for exactly that noise
+   problem) -- even worse: the same prominence fraction gave 0 peaks on some pages and reasonable
+   counts on others, no single threshold generalized because different pages' ink-density
+   distributions vary too much for one relative fraction to work everywhere.
+4. Pre-enhancing contrast/sharpness (`.normalize().sharpen()`) before the segmentation math even
+   runs, on the user's own hypothesis that boosted image quality might be why it "has trouble" --
+   genuinely worth testing, but it didn't help the new page at all and measurably *regressed* two
+   already-working pages (page3: 11 bands -> 2; page1: max band span 52% -> 65%). Sharpening
+   amplifies whatever's already there, including scan noise/paper texture, and contrast-stretching
+   can push that noise further into "looks like ink" territory.
+
+**Conclusion drawn and stated plainly to the user**: this isn't a tuning problem anymore, it's a
+sign the row-projection approach itself (collapsing a 2D page into one 1D brightness/density curve)
+is the wrong tool for this, not just badly calibrated -- pointing toward the bigger rewrite
+(real connected-component detection) rather than another variant of the same family of fix.
+
+### Pivot: Gemini vision itself for line detection -- genuinely promising, not yet integrated
+
+User asked, in response to "why don't I just manually split this one page for you," a sharper
+question: why isn't a vision model just asked to find the lines directly, instead of hand-rolled
+pixel math? Real answer given: manual-by-Claude doesn't scale/isn't precise/isn't automatable, but
+the underlying idea is real -- since the app already calls Gemini (a real vision model) for
+transcription, ask it to report line locations too, instead of approximating "where is a line"
+with brightness statistics.
+
+- First test (whole-page bounding-box detection prompt, `box_2d` in Gemini's documented 0-1000
+  normalized-coordinate convention): gemini-3.6-flash hit real (transient) 503s even after backoff
+  retries; gemini-3.5-flash-lite worked immediately. Result on the 30+-line page: **43 boxes**,
+  tightly wrapping real individual lines in correct top-to-bottom order, including through a dense
+  bottom section the old algorithm had merged into one 40%-of-page blob, and correctly separating
+  small caret-inserted words too. Dramatically better than any of the four row-projection attempts.
+- Model produced a real but minor malformed-JSON quirk (`"label": "line_number": 2` from the
+  second entry onward) -- box_2d data itself stayed intact regardless, parsed reliably via a
+  tolerant regex extraction rather than strict `JSON.parse`.
+- Tested against known-good pages too (not just the hard case) to check for regressions: on the
+  page that previously had 15 real transcribed lines, this found 29 boxes -- investigated the
+  discrepancy by visualizing with numbered, size-coded overlays rather than assuming either number
+  was "right." Found the real explanation: several of the extra boxes are short pieces of text
+  positioned to the right of a main line at the same height (the right margin) -- content the old
+  row-projection approach is structurally blind to, since it only looks at horizontal strips and
+  cannot tell two side-by-side pieces of text at the same height apart. Gemini, actually seeing the
+  page in 2D, correctly finds them as separate regions.
+- **User corrected the semantic interpretation** (Claude cannot read the actual Hebrew content and
+  said so plainly rather than guessing further): most of these short regions are topic
+  HEADINGS -- real structural content that should stay on its own line in the output, not margin
+  asides to merge away -- and only one specific tiny region was an actual cross-out/rewrite.
+  This invalidated the geometric "short width = margin note" heuristic outright (headings and a
+  cross-out are both short, indistinguishable by size alone) and reframed classification as a
+  content question only the model (or the user) can answer, not a geometry one.
+- Extended the detection prompt to ask Gemini to also classify each region's `kind`
+  (`line` / `heading` / `crossed_out`) using its own understanding of the actual content. Result:
+  **headings correctly identified 6/6**, matching the user's correction exactly. But the specific
+  cross-out region was not separately detected as its own box at all in this run (it fell inside a
+  different, much wider main-line box instead) -- so the `crossed_out` label is unverified, not
+  confirmed working, and reported to the user as exactly that rather than claimed as a win.
+- **A separate, real, still-open finding**: the same identical image produced 29 boxes on one
+  detection call and 27 on the next (temperature 0 on both) -- call-to-call consistency for this
+  kind of spatial detection task is a real open question that matters before relying on it, not
+  yet investigated further.
+- **Not yet integrated into the app at all** -- this is still at the "does the raw idea work"
+  research stage, run entirely through throwaway harnesses in `/tmp`, no changes to
+  `lineSegmenter.js`, `main.js`, or any shipped file. Next steps when resuming: test cross-out
+  detection reliability specifically (several repeated calls on the same known cross-out case),
+  decide on call-to-call consistency handling (retry-until-stable? accept some variance?), then
+  design how this would actually replace or supplement `segmentIntoLines()` in the real pipeline
+  (a whole-page Gemini call before per-line transcription -- real quota/cost implications given the
+  daily free-tier limit has already been hit twice this project).
