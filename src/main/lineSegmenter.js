@@ -369,6 +369,40 @@ async function cleanUpCrop(sharpImage) {
   return { mimeType: 'image/jpeg', data: buf.toString('base64') };
 }
 
+// Shared by both line-finding strategies below: given final pixel bands
+// (padded, for the crop) and their unpadded counterparts (for word-finding,
+// so a neighbor's ascender/descender ink pulled in by padding doesn't skew
+// the column ink-count math), crops each line image and finds its word
+// boxes. See segmentIntoLines for the field shapes this returns.
+async function buildLinesFromBands(buffer, data, width, height, threshold, contentLeft, contentRight, bands, rawBands) {
+  const rotated = sharp(buffer).rotate();
+  const lines = [];
+  for (let i = 0; i < bands.length; i++) {
+    const [top, bottom] = bands[i];
+    const [rawTop, rawBottom] = rawBands[i];
+    const cropHeight = bottom - top + 1;
+    const image = await cleanUpCrop(
+      rotated.clone().extract({ left: 0, top, width, height: cropHeight })
+    );
+
+    const colInkCounts = computeColumnInkCounts(data, width, threshold, rawTop, rawBottom, contentLeft, contentRight);
+    const wordPadding = Math.max(1, Math.round(width * WORD_PADDING_FRACTION));
+    const wordBandsLtr = findWordBands(colInkCounts, width, rawBottom - rawTop + 1);
+    // Reverse to right-to-left order to match Hebrew reading order (the
+    // rightmost visual word is the first word in the transcribed string).
+    const wordBoxes = wordBandsLtr
+      .slice()
+      .reverse()
+      .map(([left, right]) => ({
+        left: Math.max(0, left - wordPadding) / width,
+        right: Math.min(width - 1, right + wordPadding + 1) / width,
+      }));
+
+    lines.push({ image, top, bottom, wordBoxes });
+  }
+  return lines;
+}
+
 // Returns { width, height, lines }, where each line is
 // { image: {mimeType,data}, top, bottom, wordBoxes }. `top`/`bottom` are
 // pixel rows in the (post-rotation) source image; `wordBoxes` is an array
@@ -410,32 +444,148 @@ async function segmentIntoLines(buffer) {
   const { bands, rawBands } = findLineBands(rowInkCounts, height, contentWidth);
   if (bands.length < 2) return null;
 
-  const rotated = sharp(buffer).rotate();
-  const lines = [];
-  for (let i = 0; i < bands.length; i++) {
-    const [top, bottom] = bands[i];
-    const [rawTop, rawBottom] = rawBands[i];
-    const cropHeight = bottom - top + 1;
-    const image = await cleanUpCrop(
-      rotated.clone().extract({ left: 0, top, width, height: cropHeight })
-    );
-
-    const colInkCounts = computeColumnInkCounts(data, width, threshold, rawTop, rawBottom, contentLeft, contentRight);
-    const wordPadding = Math.max(1, Math.round(width * WORD_PADDING_FRACTION));
-    const wordBandsLtr = findWordBands(colInkCounts, width, rawBottom - rawTop + 1);
-    // Reverse to right-to-left order to match Hebrew reading order (the
-    // rightmost visual word is the first word in the transcribed string).
-    const wordBoxes = wordBandsLtr
-      .slice()
-      .reverse()
-      .map(([left, right]) => ({
-        left: Math.max(0, left - wordPadding) / width,
-        right: Math.min(width - 1, right + wordPadding + 1) / width,
-      }));
-
-    lines.push({ image, top, bottom, wordBoxes });
-  }
+  const lines = await buildLinesFromBands(buffer, data, width, height, threshold, contentLeft, contentRight, bands, rawBands);
   return { width, height, lines };
 }
 
-module.exports = { segmentIntoLines, findLineBands, findWordBands, otsuThreshold, trimDenseEdges };
+const VISION_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+const VISION_MODEL = 'gemini-3.5-flash-lite';
+
+const VISION_PROMPT = `Detect every individual handwritten region of text in this image of a page of handwritten notes, in top-to-bottom reading order.
+
+Return ONLY a JSON array (no other text, no markdown fences). Each element must have EXACTLY these three keys and no others:
+{"box_2d": [ymin, xmin, ymax, xmax], "n": <number>, "kind": <one of "line", "heading", "crossed_out">}
+
+- "line": a normal continuous line of the main running text.
+- "heading": a short topic header/title/label marking a new section or subject -- NOT part of the main running sentence, often visually set apart (own line, margin, underlined, etc).
+- "crossed_out": text the writer struck through, scribbled out, or otherwise marked as replaced/abandoned -- content that should NOT be read as part of the final text.
+
+Coordinates are normalized to a 0-1000 scale (0,0 is top-left, 1000,1000 is bottom-right), covering the vertical extent of that region's ink (including ascenders/descenders) and the horizontal extent of its actual written content.`;
+
+// Tolerant parse of the vision model's response: tries a straight
+// JSON.parse first, but falls back to extracting individual {...} objects
+// and salvaging at least box_2d/kind from any that don't parse on their
+// own. Seen live: an occasional malformed entry (a stray duplicate key)
+// from the model shouldn't cost every other, valid entry in the response.
+function parseVisionEntries(rawText) {
+  const cleaned = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
+  try {
+    const parsed = JSON.parse(cleaned);
+    if (Array.isArray(parsed)) return parsed;
+  } catch {
+    // fall through to tolerant extraction below
+  }
+  const entries = [];
+  const objectPattern = /\{[^{}]*\}/g;
+  let match;
+  while ((match = objectPattern.exec(cleaned)) !== null) {
+    try {
+      entries.push(JSON.parse(match[0]));
+    } catch {
+      const boxMatch = match[0].match(/"box_2d"\s*:\s*\[([^\]]+)\]/);
+      if (!boxMatch) continue;
+      const box_2d = boxMatch[1].split(',').map((n) => parseFloat(n.trim()));
+      const kindMatch = match[0].match(/"kind"\s*:\s*"(\w+)"/);
+      entries.push({ box_2d, kind: kindMatch ? kindMatch[1] : 'line' });
+    }
+  }
+  return entries;
+}
+
+// Alternative to segmentIntoLines: asks Gemini's vision model to directly
+// detect each handwritten line's bounding box and classify it (normal
+// line / heading / crossed-out), instead of computing lines from ink-pixel
+// projections. Built after ink-projection proved to be the wrong tool for
+// pages with 30+ tightly-spaced lines -- it was either merging distinct
+// lines into one oversized band or dropping lines outright, and four
+// separate signal-processing fixes (autocorrelation, peak-finding,
+// peak-finding with prominence, pre-sharpening) all failed against real
+// test pages. Vision detection was dramatically more accurate in testing,
+// including correctly telling headings and a genuine cross-out apart --
+// crossed-out regions are dropped entirely here so struck-through text
+// never reaches transcription. But unlike ink-projection, it isn't
+// deterministic (the same image detected 29 vs 27 regions across two
+// identical calls), so callers should treat a null return (network
+// failure, unparseable response, or fewer than 2 usable boxes) as "fall
+// back to segmentIntoLines", never as "this page has no lines" -- see
+// transcribeByLines in main.js for that fallback wiring.
+async function segmentIntoLinesViaVision(buffer, apiKey) {
+  if (!apiKey) return null;
+
+  const { data, width, height } = await getGrayscaleRaw(buffer);
+  const threshold = otsuThreshold(data);
+  const colCountsFullHeight = computeColumnInkCounts(data, width, threshold, 0, height - 1, 0, width - 1);
+  const [contentLeft, contentRight] = trimDenseEdges(
+    colCountsFullHeight,
+    height,
+    EDGE_ARTIFACT_DENSITY_FRACTION,
+    EDGE_SMOOTH_WINDOW
+  );
+
+  let responseText;
+  try {
+    const rotatedJpeg = await sharp(buffer).rotate().jpeg({ quality: 90 }).toBuffer();
+    const body = {
+      contents: [{
+        role: 'user',
+        parts: [
+          { text: VISION_PROMPT },
+          { inline_data: { mime_type: 'image/jpeg', data: rotatedJpeg.toString('base64') } },
+        ],
+      }],
+      generationConfig: { temperature: 0 },
+    };
+    const res = await fetch(`${VISION_API_BASE}/${VISION_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    responseText = json?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '';
+  } catch {
+    return null;
+  }
+
+  const entries = parseVisionEntries(responseText);
+
+  const rawBands = entries
+    .filter((e) => e.kind !== 'crossed_out' && Array.isArray(e.box_2d) && e.box_2d.length === 4)
+    .map((e) => {
+      const [ymin, , ymax] = e.box_2d;
+      const top = Math.max(0, Math.round((ymin / 1000) * height));
+      const bottom = Math.min(height - 1, Math.round((ymax / 1000) * height));
+      return [top, bottom];
+    })
+    .filter(([top, bottom]) => bottom > top)
+    .sort((a, b) => a[0] - b[0]);
+
+  if (rawBands.length < 2) return null;
+
+  const padding = Math.max(4, Math.round(height * PADDING_FRACTION));
+  const bands = rawBands.map(([top, bottom]) => [
+    Math.max(0, top - padding),
+    Math.min(height - 1, bottom + padding),
+  ]);
+  // Same overlap guard as findLineBands's Pass 4 -- padding two close
+  // vision boxes independently can make them overlap.
+  for (let i = 0; i < bands.length - 1; i++) {
+    if (bands[i][1] >= bands[i + 1][0]) {
+      const mid = Math.floor((rawBands[i][1] + rawBands[i + 1][0]) / 2);
+      bands[i][1] = mid;
+      bands[i + 1][0] = mid + 1;
+    }
+  }
+
+  const lines = await buildLinesFromBands(buffer, data, width, height, threshold, contentLeft, contentRight, bands, rawBands);
+  return { width, height, lines };
+}
+
+module.exports = {
+  segmentIntoLines,
+  segmentIntoLinesViaVision,
+  findLineBands,
+  findWordBands,
+  otsuThreshold,
+  trimDenseEdges,
+};

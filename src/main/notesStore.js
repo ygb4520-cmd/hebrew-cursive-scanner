@@ -67,7 +67,7 @@ function listNotes(chosenFolderPath) {
   return notes;
 }
 
-function createNote(chosenFolderPath, { imageBuffer, storedExtension, text, lineBoxes }) {
+function createNote(chosenFolderPath, { imageBuffer, storedExtension, text, lineBoxes, segmentationMethod }) {
   const dir = ensureNotesRootDir(chosenFolderPath);
   const id = `${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
   const noteDir = path.join(dir, id);
@@ -87,6 +87,10 @@ function createNote(chosenFolderPath, { imageBuffer, storedExtension, text, line
     // null) when segmentation fell back to whole-page transcription, so
     // older notes and this case both just render without that feature.
     ...(lineBoxes ? { lineBoxes } : {}),
+    // Which line-detection method actually produced this note's lines --
+    // 'vision' isn't fully deterministic call-to-call, so this makes a
+    // garbled note traceable after the fact instead of just guessing.
+    ...(segmentationMethod ? { segmentationMethod } : {}),
   };
   // Write meta.json last so a half-written note (e.g. Drive syncing mid-write)
   // is naturally skipped by listNotes() until it's complete.

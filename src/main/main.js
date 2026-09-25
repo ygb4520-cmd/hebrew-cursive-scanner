@@ -21,7 +21,7 @@ const {
   prepareImagesForGemini,
   generatePreviewDataUrl,
 } = require('./imageUtils');
-const { segmentIntoLines } = require('./lineSegmenter');
+const { segmentIntoLines, segmentIntoLinesViaVision } = require('./lineSegmenter');
 const gemini = require('./gemini');
 const notesStore = require('./notesStore');
 const updater = require('./updater');
@@ -97,13 +97,21 @@ async function mapWithConcurrencyLimit(items, limit, worker, onProgress) {
 // highlighting the whole line instead of guessing wrong.
 async function transcribeByLines(apiKey, photoBuffer, sendProgress) {
   sendProgress({ phase: 'segmenting' });
-  const segmentation = await segmentIntoLines(photoBuffer);
+  // Vision-based detection is tried first (see lineSegmenter.js for why:
+  // it's far more accurate on dense pages than ink-pixel projection, but
+  // isn't fully deterministic) -- any failure at all falls back to the
+  // original, deterministic pixel-math segmenter rather than treating a
+  // vision failure as "this page has no lines."
+  const segmentationApiKey = apiKeyStore.resolveSegmentationApiKey();
+  const visionSegmentation = await segmentIntoLinesViaVision(photoBuffer, segmentationApiKey);
+  const segmentation = visionSegmentation || (await segmentIntoLines(photoBuffer));
+  const segmentationMethod = visionSegmentation ? 'vision' : segmentation ? 'pixel-math' : 'whole-page';
 
   if (!segmentation) {
     sendProgress({ phase: 'whole-page' });
     const [wholePageImage] = await prepareImagesForGemini(photoBuffer);
     const text = await gemini.transcribeHandwriting({ apiKey, images: [wholePageImage] });
-    return { text, lineBoxes: null };
+    return { text, lineBoxes: null, segmentationMethod };
   }
 
   const { width, height, lines } = segmentation;
@@ -127,7 +135,7 @@ async function transcribeByLines(apiKey, photoBuffer, sendProgress) {
     wordBoxes: line.wordBoxes,
   }));
 
-  return { text: lineTexts.join('\n'), lineBoxes };
+  return { text: lineTexts.join('\n'), lineBoxes, segmentationMethod };
 }
 
 let mainWindow;
@@ -236,7 +244,7 @@ ipcMain.handle('note:create-from-file', async (_event, filePath, rotationDegrees
 
   const { buffer, storedExtension } = await loadImageForTranscription(filePath, rotationDegrees, cropBox);
   const apiKey = apiKeyStore.getApiKey();
-  const { text, lineBoxes } = await transcribeByLines(apiKey, buffer, (progress) => {
+  const { text, lineBoxes, segmentationMethod } = await transcribeByLines(apiKey, buffer, (progress) => {
     mainWindow?.webContents.send('note:progress', progress);
   });
 
@@ -245,6 +253,7 @@ ipcMain.handle('note:create-from-file', async (_event, filePath, rotationDegrees
     storedExtension,
     text,
     lineBoxes,
+    segmentationMethod,
   });
   return note;
 });
