@@ -557,38 +557,63 @@ async function segmentIntoLinesViaVision(buffer, apiKey, fallbackApiKey) {
     return null;
   }
 
-  const entries = parseVisionEntries(responseText);
+  // Everything from here on is our own parsing/geometry over whatever the
+  // model handed back -- wrapped so a bug or an unexpected shape in that
+  // response (seen live: overlapping raw boxes produced a negative-height
+  // crop that crashed the import outright) degrades to "fall back to
+  // pixel-math" like this function promises, instead of taking the import
+  // down with it.
+  try {
+    const entries = parseVisionEntries(responseText);
 
-  const rawBands = entries
-    .filter((e) => e.kind !== 'crossed_out' && Array.isArray(e.box_2d) && e.box_2d.length === 4)
-    .map((e) => {
-      const [ymin, , ymax] = e.box_2d;
-      const top = Math.max(0, Math.round((ymin / 1000) * height));
-      const bottom = Math.min(height - 1, Math.round((ymax / 1000) * height));
-      return [top, bottom];
-    })
-    .filter(([top, bottom]) => bottom > top)
-    .sort((a, b) => a[0] - b[0]);
+    const sortedBands = entries
+      .filter((e) => e.kind !== 'crossed_out' && Array.isArray(e.box_2d) && e.box_2d.length === 4)
+      .map((e) => {
+        const [ymin, , ymax] = e.box_2d;
+        const top = Math.max(0, Math.round((ymin / 1000) * height));
+        const bottom = Math.min(height - 1, Math.round((ymax / 1000) * height));
+        return [top, bottom];
+      })
+      .filter(([top, bottom]) => bottom > top)
+      .sort((a, b) => a[0] - b[0]);
 
-  if (rawBands.length < 2) return null;
-
-  const padding = Math.max(4, Math.round(height * PADDING_FRACTION));
-  const bands = rawBands.map(([top, bottom]) => [
-    Math.max(0, top - padding),
-    Math.min(height - 1, bottom + padding),
-  ]);
-  // Same overlap guard as findLineBands's Pass 4 -- padding two close
-  // vision boxes independently can make them overlap.
-  for (let i = 0; i < bands.length - 1; i++) {
-    if (bands[i][1] >= bands[i + 1][0]) {
-      const mid = Math.floor((rawBands[i][1] + rawBands[i + 1][0]) / 2);
-      bands[i][1] = mid;
-      bands[i + 1][0] = mid + 1;
+    // Unlike the pixel-math bands (which are already guaranteed
+    // non-overlapping by construction), the model can hand back two boxes
+    // that already overlap pre-padding -- the overlap-fix's midpoint math
+    // below assumes bands don't overlap *before* padding, only after.
+    // Merge any that do first.
+    const rawBands = [];
+    for (const band of sortedBands) {
+      const last = rawBands[rawBands.length - 1];
+      if (last && band[0] <= last[1]) {
+        last[1] = Math.max(last[1], band[1]);
+      } else {
+        rawBands.push([...band]);
+      }
     }
-  }
 
-  const lines = await buildLinesFromBands(buffer, data, width, height, threshold, contentLeft, contentRight, bands, rawBands);
-  return { width, height, lines };
+    if (rawBands.length < 2) return null;
+
+    const padding = Math.max(4, Math.round(height * PADDING_FRACTION));
+    const bands = rawBands.map(([top, bottom]) => [
+      Math.max(0, top - padding),
+      Math.min(height - 1, bottom + padding),
+    ]);
+    // Same overlap guard as findLineBands's Pass 4 -- padding two close
+    // vision boxes independently can make them overlap.
+    for (let i = 0; i < bands.length - 1; i++) {
+      if (bands[i][1] >= bands[i + 1][0]) {
+        const mid = Math.floor((rawBands[i][1] + rawBands[i + 1][0]) / 2);
+        bands[i][1] = mid;
+        bands[i + 1][0] = mid + 1;
+      }
+    }
+
+    const lines = await buildLinesFromBands(buffer, data, width, height, threshold, contentLeft, contentRight, bands, rawBands);
+    return { width, height, lines };
+  } catch {
+    return null;
+  }
 }
 
 module.exports = {
