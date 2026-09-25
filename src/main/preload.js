@@ -18,6 +18,12 @@ contextBridge.exposeInMainWorld('api', {
   setSegmentationApiKey: (key) => ipcRenderer.invoke('apikey:segmentation:set', key),
   clearSegmentationApiKey: () => ipcRenderer.invoke('apikey:segmentation:clear'),
 
+  // Optional third key, used automatically (for either key above) when a
+  // request fails because that key is out of quota.
+  hasFallbackApiKey: () => ipcRenderer.invoke('apikey:fallback:has'),
+  setFallbackApiKey: (key) => ipcRenderer.invoke('apikey:fallback:set', key),
+  clearFallbackApiKey: () => ipcRenderer.invoke('apikey:fallback:clear'),
+
   pickImage: () => ipcRenderer.invoke('image:pick'),
   getImagePreview: (filePath, rotationDegrees) =>
     ipcRenderer.invoke('image:preview', filePath, rotationDegrees),

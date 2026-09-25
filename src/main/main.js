@@ -35,7 +35,7 @@ function sleep(ms) {
 
 const RETRYABLE_ERROR_KINDS = new Set(['quota', 'unavailable']);
 
-async function transcribeLineWithRetry(apiKey, image) {
+async function transcribeLineWithRetry(apiKey, image, fallbackApiKey) {
   for (let attempt = 0; ; attempt++) {
     try {
       return await gemini.transcribeLine({ apiKey, image });
@@ -47,6 +47,14 @@ async function transcribeLineWithRetry(apiKey, image) {
       if (RETRYABLE_ERROR_KINDS.has(err.kind) && attempt < LINE_RATE_LIMIT_MAX_RETRIES) {
         await sleep(1000 * 2 ** (attempt + 1)); // 2s, 4s, 8s
         continue;
+      }
+      // Backoff retries exhausted on a quota error -- if it's a daily cap
+      // rather than a transient per-minute limit, waiting longer won't
+      // help, but a different key might. One attempt only; if the fallback
+      // key is also out, this throws and the line is marked failed same
+      // as always.
+      if (err.kind === 'quota' && fallbackApiKey && fallbackApiKey !== apiKey) {
+        return await gemini.transcribeLine({ apiKey: fallbackApiKey, image });
       }
       throw err;
     }
@@ -103,14 +111,24 @@ async function transcribeByLines(apiKey, photoBuffer, sendProgress) {
   // original, deterministic pixel-math segmenter rather than treating a
   // vision failure as "this page has no lines."
   const segmentationApiKey = apiKeyStore.resolveSegmentationApiKey();
-  const visionSegmentation = await segmentIntoLinesViaVision(photoBuffer, segmentationApiKey);
+  const fallbackApiKey = apiKeyStore.getFallbackApiKey();
+  const visionSegmentation = await segmentIntoLinesViaVision(photoBuffer, segmentationApiKey, fallbackApiKey);
   const segmentation = visionSegmentation || (await segmentIntoLines(photoBuffer));
   const segmentationMethod = visionSegmentation ? 'vision' : segmentation ? 'pixel-math' : 'whole-page';
 
   if (!segmentation) {
     sendProgress({ phase: 'whole-page' });
     const [wholePageImage] = await prepareImagesForGemini(photoBuffer);
-    const text = await gemini.transcribeHandwriting({ apiKey, images: [wholePageImage] });
+    let text;
+    try {
+      text = await gemini.transcribeHandwriting({ apiKey, images: [wholePageImage] });
+    } catch (err) {
+      if (err.kind === 'quota' && fallbackApiKey && fallbackApiKey !== apiKey) {
+        text = await gemini.transcribeHandwriting({ apiKey: fallbackApiKey, images: [wholePageImage] });
+      } else {
+        throw err;
+      }
+    }
     return { text, lineBoxes: null, segmentationMethod };
   }
 
@@ -121,7 +139,7 @@ async function transcribeByLines(apiKey, photoBuffer, sendProgress) {
     LINE_TRANSCRIBE_CONCURRENCY,
     async (line, index) => {
       try {
-        return await transcribeLineWithRetry(apiKey, line.image);
+        return await transcribeLineWithRetry(apiKey, line.image, fallbackApiKey);
       } catch (err) {
         return `[⚠ line ${index + 1} of ${lines.length} failed to transcribe: ${err.message}]`;
       }
@@ -208,6 +226,18 @@ ipcMain.handle('apikey:segmentation:set', (_event, key) => {
 
 ipcMain.handle('apikey:segmentation:clear', () => {
   apiKeyStore.clearSegmentationApiKey();
+  return true;
+});
+
+ipcMain.handle('apikey:fallback:has', () => apiKeyStore.hasFallbackApiKey());
+
+ipcMain.handle('apikey:fallback:set', (_event, key) => {
+  apiKeyStore.setFallbackApiKey(key);
+  return true;
+});
+
+ipcMain.handle('apikey:fallback:clear', () => {
+  apiKeyStore.clearFallbackApiKey();
   return true;
 });
 

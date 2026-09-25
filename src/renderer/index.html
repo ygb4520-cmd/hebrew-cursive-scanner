@@ -105,6 +105,20 @@
 
       <hr />
 
+      <label class="field-label" for="fallbackApiKeyInput">Fallback API key (optional)</label>
+      <p class="muted small">
+        Used automatically, for either key above, only when a request fails because that key is
+        out of quota. Leave this blank if you don't have a spare key -- everything above works
+        fine without it.
+      </p>
+      <div class="row">
+        <input id="fallbackApiKeyInput" type="password" placeholder="Paste a spare Gemini API key" />
+        <button id="saveFallbackApiKeyBtn" class="btn-primary">Save</button>
+      </div>
+      <p id="fallbackApiKeyStatus" class="status-line"></p>
+
+      <hr />
+
       <label class="field-label">Cloud-synced notes folder</label>
       <p class="muted small">
         Choose a folder that lives inside Dropbox, Google Drive, or iCloud Drive on this

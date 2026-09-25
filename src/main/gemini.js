@@ -167,4 +167,4 @@ async function transcribeLine({ apiKey, image }) {
   return generateContent(apiKey, MODEL_NAME_LINE, TRANSCRIPTION_PROMPT_LINE, [image]);
 }
 
-module.exports = { transcribeHandwriting, transcribeLine, GeminiError, MODEL_NAME, MODEL_NAME_LINE };
+module.exports = { transcribeHandwriting, transcribeLine, generateContent, GeminiError, MODEL_NAME, MODEL_NAME_LINE };

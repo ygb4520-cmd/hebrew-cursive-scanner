@@ -56,6 +56,7 @@
 // Known limitation on line-splitting: assumes a reasonably level photo
 // (not badly skewed) -- this doesn't attempt deskewing.
 const sharp = require('sharp');
+const gemini = require('./gemini');
 
 // All of these are fractions of the image height, not fixed pixel counts,
 // so this scales across different photo resolutions.
@@ -448,7 +449,6 @@ async function segmentIntoLines(buffer) {
   return { width, height, lines };
 }
 
-const VISION_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
 const VISION_MODEL = 'gemini-3.5-flash-lite';
 
 const VISION_PROMPT = `Detect every individual handwritten region of text in this image of a page of handwritten notes, in top-to-bottom reading order.
@@ -492,6 +492,32 @@ function parseVisionEntries(rawText) {
   return entries;
 }
 
+const VISION_MAX_RETRIES = 3;
+const VISION_RETRYABLE_KINDS = new Set(['quota', 'unavailable']);
+
+// Retries transient failures (rate-limiting, or the "high demand" 503s
+// this exact model is known to hit -- see gemini.js) with backoff on the
+// same key, same as the per-line transcription path. Only after those are
+// exhausted does a persistent quota error fall over to the spare key --
+// waiting won't fix a truly exhausted daily quota, but a different key
+// might.
+async function detectLinesWithRetry(apiKey, fallbackApiKey, image) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await gemini.generateContent(apiKey, VISION_MODEL, VISION_PROMPT, [image]);
+    } catch (err) {
+      if (VISION_RETRYABLE_KINDS.has(err.kind) && attempt < VISION_MAX_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** (attempt + 1))); // 2s, 4s, 8s
+        continue;
+      }
+      if (err.kind === 'quota' && fallbackApiKey && fallbackApiKey !== apiKey) {
+        return await gemini.generateContent(fallbackApiKey, VISION_MODEL, VISION_PROMPT, [image]);
+      }
+      throw err;
+    }
+  }
+}
+
 // Alternative to segmentIntoLines: asks Gemini's vision model to directly
 // detect each handwritten line's bounding box and classify it (normal
 // line / heading / crossed-out), instead of computing lines from ink-pixel
@@ -509,7 +535,7 @@ function parseVisionEntries(rawText) {
 // failure, unparseable response, or fewer than 2 usable boxes) as "fall
 // back to segmentIntoLines", never as "this page has no lines" -- see
 // transcribeByLines in main.js for that fallback wiring.
-async function segmentIntoLinesViaVision(buffer, apiKey) {
+async function segmentIntoLinesViaVision(buffer, apiKey, fallbackApiKey) {
   if (!apiKey) return null;
 
   const { data, width, height } = await getGrayscaleRaw(buffer);
@@ -525,24 +551,8 @@ async function segmentIntoLinesViaVision(buffer, apiKey) {
   let responseText;
   try {
     const rotatedJpeg = await sharp(buffer).rotate().jpeg({ quality: 90 }).toBuffer();
-    const body = {
-      contents: [{
-        role: 'user',
-        parts: [
-          { text: VISION_PROMPT },
-          { inline_data: { mime_type: 'image/jpeg', data: rotatedJpeg.toString('base64') } },
-        ],
-      }],
-      generationConfig: { temperature: 0 },
-    };
-    const res = await fetch(`${VISION_API_BASE}/${VISION_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
-    responseText = json?.candidates?.[0]?.content?.parts?.map((p) => p.text || '').join('') || '';
+    const image = { mimeType: 'image/jpeg', data: rotatedJpeg.toString('base64') };
+    responseText = await detectLinesWithRetry(apiKey, fallbackApiKey, image);
   } catch {
     return null;
   }

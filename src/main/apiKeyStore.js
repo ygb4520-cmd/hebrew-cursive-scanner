@@ -41,6 +41,7 @@ function clearKey(filename) {
 
 const TRANSCRIPTION_KEY_FILE = 'gemini-key.enc';
 const SEGMENTATION_KEY_FILE = 'gemini-key-segmentation.enc';
+const FALLBACK_KEY_FILE = 'gemini-key-fallback.enc';
 
 function hasApiKey() {
   return hasKey(TRANSCRIPTION_KEY_FILE);
@@ -81,6 +82,22 @@ function resolveSegmentationApiKey() {
   return getSegmentationApiKey() || getApiKey();
 }
 
+function hasFallbackApiKey() {
+  return hasKey(FALLBACK_KEY_FILE);
+}
+
+function setFallbackApiKey(plainTextKey) {
+  setKey(FALLBACK_KEY_FILE, plainTextKey);
+}
+
+function getFallbackApiKey() {
+  return getKey(FALLBACK_KEY_FILE);
+}
+
+function clearFallbackApiKey() {
+  clearKey(FALLBACK_KEY_FILE);
+}
+
 module.exports = {
   hasApiKey,
   setApiKey,
@@ -91,4 +108,8 @@ module.exports = {
   getSegmentationApiKey,
   clearSegmentationApiKey,
   resolveSegmentationApiKey,
+  hasFallbackApiKey,
+  setFallbackApiKey,
+  getFallbackApiKey,
+  clearFallbackApiKey,
 };

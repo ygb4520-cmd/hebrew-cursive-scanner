@@ -18,6 +18,9 @@ const apiKeyStatus = document.getElementById('apiKeyStatus');
 const segApiKeyInput = document.getElementById('segApiKeyInput');
 const saveSegApiKeyBtn = document.getElementById('saveSegApiKeyBtn');
 const segApiKeyStatus = document.getElementById('segApiKeyStatus');
+const fallbackApiKeyInput = document.getElementById('fallbackApiKeyInput');
+const saveFallbackApiKeyBtn = document.getElementById('saveFallbackApiKeyBtn');
+const fallbackApiKeyStatus = document.getElementById('fallbackApiKeyStatus');
 const syncFolderPathEl = document.getElementById('syncFolderPath');
 const chooseSyncFolderBtn = document.getElementById('chooseSyncFolderBtn');
 const appVersionLabel = document.getElementById('appVersionLabel');
@@ -61,6 +64,13 @@ async function openSettings() {
     : 'Not set — currently reusing the transcription key above.';
   segApiKeyStatus.classList.remove('error');
   segApiKeyInput.value = '';
+
+  const hasFallbackKey = await window.api.hasFallbackApiKey();
+  fallbackApiKeyStatus.textContent = hasFallbackKey
+    ? 'A fallback key is saved on this machine.'
+    : 'Not set.';
+  fallbackApiKeyStatus.classList.remove('error');
+  fallbackApiKeyInput.value = '';
 
   syncFolderPathEl.textContent = settings.syncFolderPath || 'Not set';
   settingsModal.classList.remove('hidden');
@@ -109,6 +119,24 @@ saveSegApiKeyBtn.addEventListener('click', async () => {
   } catch (err) {
     segApiKeyStatus.textContent = `Could not save key: ${err.message}`;
     segApiKeyStatus.classList.add('error');
+  }
+});
+
+saveFallbackApiKeyBtn.addEventListener('click', async () => {
+  const key = fallbackApiKeyInput.value.trim();
+  if (!key) {
+    fallbackApiKeyStatus.textContent = 'Paste a key first.';
+    fallbackApiKeyStatus.classList.add('error');
+    return;
+  }
+  try {
+    await window.api.setFallbackApiKey(key);
+    fallbackApiKeyInput.value = '';
+    fallbackApiKeyStatus.textContent = 'Saved and encrypted on this machine.';
+    fallbackApiKeyStatus.classList.remove('error');
+  } catch (err) {
+    fallbackApiKeyStatus.textContent = `Could not save key: ${err.message}`;
+    fallbackApiKeyStatus.classList.add('error');
   }
 });
 
