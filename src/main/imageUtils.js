@@ -14,8 +14,157 @@ const path = require('path');
 const heicConvert = require('heic-convert');
 const sharp = require('sharp');
 const exifr = require('exifr');
+const { otsuThreshold } = require('./lineSegmenter');
 
 const SUPPORTED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.heic', '.heif', '.pdf'];
+
+// How far a real hand-held photo's tilt search should look, and how coarse
+// vs fine that search is. A skew beyond this is more likely a genuinely
+// wrong orientation (handled separately, in 90-degree steps) than camera
+// tilt, so it's out of scope here.
+const MAX_SKEW_DEGREES = 8;
+const COARSE_STEP_DEGREES = 1;
+const FINE_STEP_DEGREES = 0.1;
+const MIN_CORRECTION_DEGREES = 0.2; // skip rotating for noise-level angles
+
+// Detects small camera-tilt skew using the ruled notebook lines themselves
+// as a level reference (classic projection-profile skew detection): at the
+// correctly-leveled angle, horizontal rows alternate most sharply between
+// "on a ruled line or text" (dark) and "blank paper between lines" (bright)
+// -- i.e. the row-darkness variance is maximized. A skewed photo blurs the
+// ruled lines across many rows instead, flattening that variance.
+//
+// Built after slant repeatedly caused real problems this same session: it
+// contributed to line-detection boundary bleed between adjacent lines, and
+// is a likely factor in transcription accuracy too, since a diagonally
+// sliced line crop is objectively harder to read than a level one. Fixing
+// it once here, upstream of segmentation, helps every downstream step at
+// once instead of patching each symptom separately.
+//
+// Two things a naive version of this gets wrong, confirmed live testing
+// against a real photo (a "known good" photo scored a spurious 9° here
+// before this fix):
+// 1. sharp's rotate() expands the canvas to fit the rotated rectangle, so a
+//    naive per-angle comparison is confounded by canvas size itself, not
+//    just alignment -- variance grew monotonically with |angle| regardless
+//    of true skew, because larger angles simply produced larger canvases.
+//    Fixed by comparing every candidate angle at the SAME fixed window size
+//    (a centered crop back down after each rotation), never the raw
+//    (size-varying) rotated output.
+// 2. Real photos usually have some background (desk, table) outside the
+//    page itself. Rotating repositions that background relative to the
+//    frame and creates large, angle-dependent contrast changes that have
+//    nothing to do with the ruled lines and swamp the real signal. Fixed by
+//    cropping to just the page content first (reusing detectPageBoundingBox)
+//    before any angle search happens.
+//
+// Downscaled for speed (a coarse degree-by-degree pass, then a finer pass
+// around the best coarse angle) -- the caller applies the returned angle to
+// the full-resolution image. Never throws: deskew is an accuracy
+// enhancement, not a step anything else depends on, so any failure here
+// just skips correction (returns 0) rather than breaking the import.
+async function detectSkewAngle(buffer) {
+  try {
+    const oriented = sharp(buffer).rotate();
+    const pageBox = await detectPageBoundingBox(await oriented.clone().toBuffer());
+
+    let pageOnly = oriented;
+    if (pageBox) {
+      const { width: fullW, height: fullH } = await oriented.clone().metadata();
+      const left = Math.round(pageBox.left * fullW);
+      const top = Math.round(pageBox.top * fullH);
+      const cropW = Math.round((pageBox.right - pageBox.left) * fullW);
+      const cropH = Math.round((pageBox.bottom - pageBox.top) * fullH);
+      pageOnly = oriented.clone().extract({ left, top, width: cropW, height: cropH });
+    }
+
+    // Already downscaled + grayscale once, up front -- each candidate angle
+    // below then only needs the cheap rotate+extract+raw steps, not a full
+    // re-decode/resize/grayscale-conversion every time.
+    const smallGray = await pageOnly.resize({ width: 700 }).grayscale().toBuffer();
+    const {
+      data: baseData,
+      info: { width: baseW, height: baseH },
+    } = await sharp(smallGray).raw().toBuffer({ resolveWithObject: true });
+    // Binarized ink-pixel counts, not raw grayscale darkness -- the same
+    // technique already proven for line detection elsewhere in this file
+    // (see lineSegmenter.js). Raw grayscale darkness sums turned out too
+    // weak a signal in testing: real photos have enough mid-tone shading
+    // (shadow, paper texture) that the actual ruled-line/text-row pattern
+    // got lost in it, understating real skew on two pages confirmed
+    // visibly slanted earlier this same session. A per-pixel ink/not-ink
+    // count is far more sensitive to the row pattern the search is
+    // actually looking for.
+    const threshold = otsuThreshold(baseData);
+    // Shrink the comparison window so it stays safely inside the rotated
+    // canvas (which grows with angle) at every angle in the search range --
+    // this is what makes every candidate's canvas size identical.
+    const winW = Math.round(baseW * 0.8);
+    const winH = Math.round(baseH * 0.8);
+
+    async function rowInkVarianceAtAngle(angle) {
+      const rotated = sharp(smallGray).rotate(angle, { background: '#ffffff' }).grayscale();
+      const { width: rotW, height: rotH } = await rotated.clone().metadata();
+      const left = Math.max(0, Math.round((rotW - winW) / 2));
+      const top = Math.max(0, Math.round((rotH - winH) / 2));
+      const { data, info } = await rotated
+        .extract({ left, top, width: Math.min(winW, rotW - left), height: Math.min(winH, rotH - top) })
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+      const { width, height } = info;
+      const rowInkCounts = new Float64Array(height);
+      for (let y = 0; y < height; y++) {
+        let count = 0;
+        const rowStart = y * width;
+        for (let x = 0; x < width; x++) if (data[rowStart + x] < threshold) count++;
+        rowInkCounts[y] = count;
+      }
+      const mean = rowInkCounts.reduce((a, b) => a + b, 0) / height;
+      let variance = 0;
+      for (let y = 0; y < height; y++) variance += (rowInkCounts[y] - mean) ** 2;
+      return variance / height;
+    }
+
+    let bestAngle = 0;
+    let bestVariance = -Infinity;
+    for (let angle = -MAX_SKEW_DEGREES; angle <= MAX_SKEW_DEGREES; angle += COARSE_STEP_DEGREES) {
+      const variance = await rowInkVarianceAtAngle(angle);
+      if (variance > bestVariance) {
+        bestVariance = variance;
+        bestAngle = angle;
+      }
+    }
+
+    let fineBest = bestAngle;
+    let fineBestVariance = bestVariance;
+    for (
+      let angle = bestAngle - COARSE_STEP_DEGREES;
+      angle <= bestAngle + COARSE_STEP_DEGREES;
+      angle += FINE_STEP_DEGREES
+    ) {
+      if (angle === bestAngle) continue; // already evaluated in the coarse pass
+      const variance = await rowInkVarianceAtAngle(angle);
+      if (variance > fineBestVariance) {
+        fineBestVariance = variance;
+        fineBest = angle;
+      }
+    }
+
+    return Math.round(fineBest * 10) / 10;
+  } catch {
+    return 0;
+  }
+}
+
+// Applies detectSkewAngle's result to the full-resolution buffer, filling
+// the newly-exposed corners with white (matching real paper) rather than
+// black, so the edge-artifact trimming elsewhere in the pipeline doesn't
+// mistake them for a scan/binder artifact.
+async function correctSkew(buffer) {
+  const angle = await detectSkewAngle(buffer);
+  if (Math.abs(angle) < MIN_CORRECTION_DEGREES) return buffer;
+  return sharp(buffer).rotate(angle, { background: '#ffffff' }).toBuffer();
+}
 
 function isSupportedImage(filePath) {
   return SUPPORTED_EXTENSIONS.includes(path.extname(filePath).toLowerCase());
@@ -88,6 +237,10 @@ async function loadImageForTranscription(filePath, manualRotationDegrees = 0, cr
     if (((manualRotationDegrees % 360) + 360) % 360 !== 0) {
       buffer = await sharp(buffer).rotate(manualRotationDegrees).toBuffer();
     }
+    // A scanned-then-PDF'd page can still be crooked even though PDF
+    // rendering itself introduces no tilt -- confirmed on a real test page
+    // this exact session (visibly slanted lines from a crooked scan).
+    buffer = await correctSkew(buffer);
     if (cropBox) {
       buffer = await applyCrop(buffer, cropBox);
     }
@@ -129,6 +282,11 @@ async function loadImageForTranscription(filePath, manualRotationDegrees = 0, cr
   if (((manualRotationDegrees % 360) + 360) % 360 !== 0) {
     buffer = await sharp(buffer).rotate(manualRotationDegrees).toBuffer();
   }
+
+  // Correct small camera-tilt skew before anything else sees this image --
+  // segmentation, transcription, and the saved photo all end up using the
+  // same leveled buffer this way (see detectSkewAngle for why this matters).
+  buffer = await correctSkew(buffer);
 
   if (cropBox) {
     buffer = await applyCrop(buffer, cropBox);
@@ -267,5 +425,6 @@ module.exports = {
   prepareImagesForGemini,
   generatePreviewDataUrl,
   detectPageBoundingBox,
+  detectSkewAngle,
   SUPPORTED_EXTENSIONS,
 };
