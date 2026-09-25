@@ -91,6 +91,20 @@
 
       <hr />
 
+      <label class="field-label" for="segApiKeyInput">Line-detection API key (optional)</label>
+      <p class="muted small">
+        Only needed if you've set up a separate Google Cloud project for line detection, to
+        keep its API usage from sharing the transcription key's quota above. Leave this blank
+        to just reuse the transcription key for everything.
+      </p>
+      <div class="row">
+        <input id="segApiKeyInput" type="password" placeholder="Paste a second Gemini API key" />
+        <button id="saveSegApiKeyBtn" class="btn-primary">Save</button>
+      </div>
+      <p id="segApiKeyStatus" class="status-line"></p>
+
+      <hr />
+
       <label class="field-label">Cloud-synced notes folder</label>
       <p class="muted small">
         Choose a folder that lives inside Dropbox, Google Drive, or iCloud Drive on this

@@ -11,6 +11,13 @@ contextBridge.exposeInMainWorld('api', {
   setApiKey: (key) => ipcRenderer.invoke('apikey:set', key),
   clearApiKey: () => ipcRenderer.invoke('apikey:clear'),
 
+  // Optional, separate key for the line-segmentation feature — lets it use
+  // its own Google Cloud project's API quota instead of sharing the
+  // transcription key's quota.
+  hasSegmentationApiKey: () => ipcRenderer.invoke('apikey:segmentation:has'),
+  setSegmentationApiKey: (key) => ipcRenderer.invoke('apikey:segmentation:set', key),
+  clearSegmentationApiKey: () => ipcRenderer.invoke('apikey:segmentation:clear'),
+
   pickImage: () => ipcRenderer.invoke('image:pick'),
   getImagePreview: (filePath, rotationDegrees) =>
     ipcRenderer.invoke('image:preview', filePath, rotationDegrees),

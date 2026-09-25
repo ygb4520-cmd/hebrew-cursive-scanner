@@ -15,6 +15,9 @@ const closeSettingsBtn = document.getElementById('closeSettingsBtn');
 const apiKeyInput = document.getElementById('apiKeyInput');
 const saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
 const apiKeyStatus = document.getElementById('apiKeyStatus');
+const segApiKeyInput = document.getElementById('segApiKeyInput');
+const saveSegApiKeyBtn = document.getElementById('saveSegApiKeyBtn');
+const segApiKeyStatus = document.getElementById('segApiKeyStatus');
 const syncFolderPathEl = document.getElementById('syncFolderPath');
 const chooseSyncFolderBtn = document.getElementById('chooseSyncFolderBtn');
 const appVersionLabel = document.getElementById('appVersionLabel');
@@ -51,6 +54,14 @@ async function openSettings() {
   apiKeyStatus.textContent = hasKey ? 'A key is already saved on this machine.' : '';
   apiKeyStatus.classList.remove('error');
   apiKeyInput.value = '';
+
+  const hasSegKey = await window.api.hasSegmentationApiKey();
+  segApiKeyStatus.textContent = hasSegKey
+    ? 'A dedicated key is saved on this machine.'
+    : 'Not set — currently reusing the transcription key above.';
+  segApiKeyStatus.classList.remove('error');
+  segApiKeyInput.value = '';
+
   syncFolderPathEl.textContent = settings.syncFolderPath || 'Not set';
   settingsModal.classList.remove('hidden');
   const version = await window.api.getAppVersion();
@@ -80,6 +91,24 @@ saveApiKeyBtn.addEventListener('click', async () => {
   } catch (err) {
     apiKeyStatus.textContent = `Could not save key: ${err.message}`;
     apiKeyStatus.classList.add('error');
+  }
+});
+
+saveSegApiKeyBtn.addEventListener('click', async () => {
+  const key = segApiKeyInput.value.trim();
+  if (!key) {
+    segApiKeyStatus.textContent = 'Paste a key first.';
+    segApiKeyStatus.classList.add('error');
+    return;
+  }
+  try {
+    await window.api.setSegmentationApiKey(key);
+    segApiKeyInput.value = '';
+    segApiKeyStatus.textContent = 'Saved and encrypted on this machine.';
+    segApiKeyStatus.classList.remove('error');
+  } catch (err) {
+    segApiKeyStatus.textContent = `Could not save key: ${err.message}`;
+    segApiKeyStatus.classList.add('error');
   }
 });
 

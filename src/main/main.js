@@ -191,6 +191,18 @@ ipcMain.handle('apikey:clear', () => {
   return true;
 });
 
+ipcMain.handle('apikey:segmentation:has', () => apiKeyStore.hasSegmentationApiKey());
+
+ipcMain.handle('apikey:segmentation:set', (_event, key) => {
+  apiKeyStore.setSegmentationApiKey(key);
+  return true;
+});
+
+ipcMain.handle('apikey:segmentation:clear', () => {
+  apiKeyStore.clearSegmentationApiKey();
+  return true;
+});
+
 // ---- IPC: image import + transcription ---------------------------------------------
 
 ipcMain.handle('image:pick', async () => {
