@@ -24,6 +24,8 @@ const fallbackApiKeyStatus = document.getElementById('fallbackApiKeyStatus');
 const syncFolderPathEl = document.getElementById('syncFolderPath');
 const chooseSyncFolderBtn = document.getElementById('chooseSyncFolderBtn');
 const appVersionLabel = document.getElementById('appVersionLabel');
+const checkUpdateBtn = document.getElementById('checkUpdateBtn');
+const checkUpdateStatus = document.getElementById('checkUpdateStatus');
 
 const updateBanner = document.getElementById('updateBanner');
 const updateBannerText = document.getElementById('updateBannerText');
@@ -76,6 +78,8 @@ async function openSettings() {
   fallbackApiKeyInput.value = '';
 
   syncFolderPathEl.textContent = settings.syncFolderPath || 'Not set';
+  checkUpdateStatus.textContent = '';
+  checkUpdateStatus.classList.remove('error');
   settingsModal.classList.remove('hidden');
   const version = await window.api.getAppVersion();
   appVersionLabel.textContent = `v${version}`;
@@ -785,6 +789,9 @@ function selectNote(id) {
 // Self-update
 // ---------------------------------------------------------------------------
 
+// Returns a status so a manual check (see checkUpdateBtn below) can report
+// an outcome either way -- the automatic startup check just ignores it and
+// stays silent on failure, same as before.
 async function checkForUpdate() {
   try {
     const result = await window.api.checkForUpdate();
@@ -792,11 +799,29 @@ async function checkForUpdate() {
       pendingUpdate = result;
       updateBannerText.textContent = `A new version (v${result.version}) is available.`;
       updateBanner.classList.remove('hidden');
+      return { status: 'available', version: result.version };
     }
+    return { status: 'up-to-date' };
   } catch {
-    // Offline or GitHub unreachable — fail silently, not worth bothering the user.
+    return { status: 'error' };
   }
 }
+
+checkUpdateBtn.addEventListener('click', async () => {
+  checkUpdateBtn.disabled = true;
+  checkUpdateStatus.classList.remove('error');
+  checkUpdateStatus.textContent = 'Checking…';
+  const result = await checkForUpdate();
+  checkUpdateBtn.disabled = false;
+  if (result.status === 'available') {
+    checkUpdateStatus.textContent = `Update available: v${result.version}. Close Settings to see it.`;
+  } else if (result.status === 'up-to-date') {
+    checkUpdateStatus.textContent = "You're up to date.";
+  } else {
+    checkUpdateStatus.textContent = 'Could not check for updates — check your internet connection.';
+    checkUpdateStatus.classList.add('error');
+  }
+});
 
 updateBannerBtn.addEventListener('click', async () => {
   if (!pendingUpdate) return;
