@@ -325,6 +325,8 @@ ipcMain.handle('update:check', async () => {
 });
 
 ipcMain.handle('update:apply', async (_event, assetUrl) => {
-  await updater.applyUpdate(assetUrl);
+  await updater.applyUpdate(assetUrl, (progress) => {
+    mainWindow?.webContents.send('update:progress', progress);
+  });
   return true;
 });

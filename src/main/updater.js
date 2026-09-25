@@ -68,13 +68,26 @@ async function checkForUpdate() {
   };
 }
 
-async function downloadAsset(url, destPath) {
+// Streams the download instead of awaiting one big arrayBuffer() so
+// progress can be reported as bytes actually arrive -- the previous
+// version gave the UI no signal at all until the whole file was done.
+async function downloadAsset(url, destPath, onProgress) {
   const response = await fetch(url);
   if (!response.ok) {
     throw new Error(`Could not download update (${response.status})`);
   }
-  const buffer = Buffer.from(await response.arrayBuffer());
-  fs.writeFileSync(destPath, buffer);
+  const totalBytes = Number(response.headers.get('content-length')) || 0;
+  const reader = response.body.getReader();
+  const chunks = [];
+  let receivedBytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    receivedBytes += value.length;
+    onProgress?.({ phase: 'downloading', receivedBytes, totalBytes });
+  }
+  fs.writeFileSync(destPath, Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))));
 }
 
 function run(cmd, args) {
@@ -86,10 +99,11 @@ function run(cmd, args) {
   });
 }
 
-async function applyMacUpdate(assetUrl) {
+async function applyMacUpdate(assetUrl, onProgress) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hcs-update-'));
   const zipPath = path.join(tmpDir, 'update.zip');
-  await downloadAsset(assetUrl, zipPath);
+  await downloadAsset(assetUrl, zipPath, onProgress);
+  onProgress?.({ phase: 'installing' });
 
   const extractDir = path.join(tmpDir, 'extracted');
   fs.mkdirSync(extractDir, { recursive: true });
@@ -127,10 +141,11 @@ rm -rf "${tmpDir}"
   setTimeout(() => app.quit(), 300);
 }
 
-async function applyWindowsUpdate(assetUrl) {
+async function applyWindowsUpdate(assetUrl, onProgress) {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hcs-update-'));
   const installerPath = path.join(tmpDir, 'update-installer.exe');
-  await downloadAsset(assetUrl, installerPath);
+  await downloadAsset(assetUrl, installerPath, onProgress);
+  onProgress?.({ phase: 'installing' });
 
   // Launch the installer detached, then quit — same as a manual install,
   // just without the user having to find/download it themselves.
@@ -139,11 +154,11 @@ async function applyWindowsUpdate(assetUrl) {
   setTimeout(() => app.quit(), 500);
 }
 
-async function applyUpdate(assetUrl) {
+async function applyUpdate(assetUrl, onProgress) {
   if (process.platform === 'darwin') {
-    await applyMacUpdate(assetUrl);
+    await applyMacUpdate(assetUrl, onProgress);
   } else if (process.platform === 'win32') {
-    await applyWindowsUpdate(assetUrl);
+    await applyWindowsUpdate(assetUrl, onProgress);
   } else {
     throw new Error(`Self-update isn't supported on this platform (${process.platform}).`);
   }

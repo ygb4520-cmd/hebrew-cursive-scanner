@@ -28,6 +28,9 @@ const appVersionLabel = document.getElementById('appVersionLabel');
 const updateBanner = document.getElementById('updateBanner');
 const updateBannerText = document.getElementById('updateBannerText');
 const updateBannerBtn = document.getElementById('updateBannerBtn');
+const updateBannerPercent = document.getElementById('updateBannerPercent');
+const updateBannerProgressTrack = document.getElementById('updateBannerProgressTrack');
+const updateBannerProgressFill = document.getElementById('updateBannerProgressFill');
 
 let notes = [];
 let activeNoteId = null;
@@ -798,14 +801,34 @@ async function checkForUpdate() {
 updateBannerBtn.addEventListener('click', async () => {
   if (!pendingUpdate) return;
   updateBannerBtn.disabled = true;
-  updateBannerText.textContent = `Downloading v${pendingUpdate.version}… the app will restart automatically.`;
+  updateBannerText.textContent = `Downloading v${pendingUpdate.version}…`;
+  updateBannerPercent.classList.remove('hidden');
+  updateBannerPercent.textContent = '0%';
+  updateBannerProgressTrack.classList.remove('hidden');
+  updateBannerProgressFill.style.width = '0%';
+
+  const unsubscribe = window.api.onUpdateProgress((progress) => {
+    if (progress.phase === 'downloading' && progress.totalBytes > 0) {
+      const percent = Math.round((progress.receivedBytes / progress.totalBytes) * 100);
+      updateBannerPercent.textContent = `${percent}%`;
+      updateBannerProgressFill.style.width = `${percent}%`;
+    } else if (progress.phase === 'installing') {
+      updateBannerText.textContent = `Installing v${pendingUpdate.version}… the app will restart automatically.`;
+      updateBannerPercent.classList.add('hidden');
+      updateBannerProgressFill.style.width = '100%';
+    }
+  });
+
   try {
     await window.api.applyUpdate(pendingUpdate.assetUrl);
     // On success the main process quits this instance and relaunches the
     // new one — nothing left to do here.
   } catch (err) {
+    unsubscribe();
     updateBannerBtn.disabled = false;
     updateBannerText.textContent = `Update failed: ${err.message}`;
+    updateBannerPercent.classList.add('hidden');
+    updateBannerProgressTrack.classList.add('hidden');
   }
 });
 

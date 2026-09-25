@@ -49,4 +49,12 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('note:progress', listener);
     return () => ipcRenderer.removeListener('note:progress', listener);
   },
+
+  // Live progress while a self-update downloads and installs. Returns an
+  // unsubscribe function.
+  onUpdateProgress: (callback) => {
+    const listener = (_event, progress) => callback(progress);
+    ipcRenderer.on('update:progress', listener);
+    return () => ipcRenderer.removeListener('update:progress', listener);
+  },
 });

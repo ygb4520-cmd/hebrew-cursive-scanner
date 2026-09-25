@@ -32,7 +32,14 @@ body {
   font-size: 13px;
 }
 .banner.hidden { display: none; }
-.update-banner { background: #e8f4ff; border-bottom-color: #bde0ff; }
+.update-banner { background: #e8f4ff; border-bottom-color: #bde0ff; position: relative; }
+.update-banner-percent { font-variant-numeric: tabular-nums; color: #0064d1; font-weight: 600; font-size: 12px; flex-shrink: 0; }
+.update-banner-percent.hidden { display: none; }
+/* A slim rail on the banner's own bottom edge instead of new vertical
+   space, so a download starting never shifts the note list below it. */
+.update-banner-progress-track { position: absolute; left: 0; right: 0; bottom: -1px; height: 3px; background: #cfe6fb; overflow: hidden; }
+.update-banner-progress-track.hidden { display: none; }
+.update-banner-progress-fill { height: 100%; width: 0%; background: #0064d1; border-radius: 0 2px 2px 0; transition: width 0.15s ease-out; }
 
 .layout { flex: 1; display: flex; min-height: 0; }
 
