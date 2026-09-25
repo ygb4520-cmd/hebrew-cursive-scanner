@@ -31,7 +31,16 @@ const MODEL_NAME = 'gemini-3.6-flash';
 // (rare, single request) stays on the already-vetted gemini-3.6-flash.
 const MODEL_NAME_LINE = 'gemini-3.5-flash-lite';
 
+const { loadFewShotExamples } = require('./fewShot');
+
 const API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+
+// Short lead-in for each few-shot example turn -- the real request still
+// gets the full SHARED_GUIDANCE below; examples just need enough context for
+// the model to recognize the pattern ("here's a line, here's its correct
+// reading") without repeating the whole instruction block for each one.
+const FEW_SHOT_INSTRUCTION =
+  'Transcribe this line of handwritten Hebrew cursive into block print, exactly as written:';
 
 const SHARED_GUIDANCE = `This is typically Torah/Talmud/halacha study shorthand: dense, cramped, abbreviation-heavy, and often mixes Hebrew with occasional English words or phrases the note-taker jotted down themselves (e.g. a quick English gloss or translation of a term).
 
@@ -61,7 +70,7 @@ class GeminiError extends Error {
   }
 }
 
-async function generateContent(apiKey, model, promptText, images) {
+async function generateContent(apiKey, model, promptText, images, fewShotExamples = []) {
   if (!apiKey) {
     throw new GeminiError('No Gemini API key is configured yet.', 'auth');
   }
@@ -70,9 +79,27 @@ async function generateContent(apiKey, model, promptText, images) {
   }
 
   const url = `${API_BASE}/${model}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  // Each example becomes a user/model turn pair ("here's a line" / "here's
+  // its correct reading") ahead of the real request, so the model has your
+  // actual handwriting/abbreviations/vocabulary as context instead of only
+  // its generic training. Empty when no examples exist yet (see fewShot.js)
+  // -- the request is then identical to before this feature existed.
+  const exampleTurns = fewShotExamples.flatMap((example) => [
+    {
+      role: 'user',
+      parts: [
+        { text: FEW_SHOT_INSTRUCTION },
+        { inline_data: { mime_type: example.mimeType, data: example.data } },
+      ],
+    },
+    { role: 'model', parts: [{ text: example.text }] },
+  ]);
+
   const body = {
     contents: [
+      ...exampleTurns,
       {
+        role: 'user',
         parts: [
           { text: promptText },
           ...images.map((img) => ({
@@ -164,7 +191,8 @@ async function transcribeHandwriting({ apiKey, images }) {
 // reading a whole page in one shot, which is why notes are segmented into
 // lines first.
 async function transcribeLine({ apiKey, image }) {
-  return generateContent(apiKey, MODEL_NAME_LINE, TRANSCRIPTION_PROMPT_LINE, [image]);
+  const fewShotExamples = loadFewShotExamples();
+  return generateContent(apiKey, MODEL_NAME_LINE, TRANSCRIPTION_PROMPT_LINE, [image], fewShotExamples);
 }
 
 module.exports = { transcribeHandwriting, transcribeLine, generateContent, GeminiError, MODEL_NAME, MODEL_NAME_LINE };
