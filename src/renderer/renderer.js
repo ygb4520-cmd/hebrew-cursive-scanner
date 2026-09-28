@@ -208,16 +208,64 @@ const cropBoxEl = document.getElementById('cropBox');
 const rotateLeftBtn = document.getElementById('rotateLeftBtn');
 const rotateRightBtn = document.getElementById('rotateRightBtn');
 const resetCropBtn = document.getElementById('resetCropBtn');
+const previewZoomInBtn = document.getElementById('zoomInBtn');
+const previewZoomOutBtn = document.getElementById('zoomOutBtn');
+const zoomLevelLabel = document.getElementById('zoomLevelLabel');
 const cancelPreviewBtn = document.getElementById('cancelPreviewBtn');
 const confirmTranscribeBtn = document.getElementById('confirmTranscribeBtn');
 
 const FULL_CROP = { left: 0, top: 0, right: 1, bottom: 1 };
 const MIN_CROP_SIZE = 0.08; // fraction, avoids collapsing the box to nothing
+// Named distinctly from the unrelated photo-viewer zoom further down this
+// file (MIN_ZOOM/MAX_ZOOM there) -- this session hit a real top-level
+// `const` name collision between the two once already.
+const PREVIEW_ZOOM_STEP = 0.5;
+const PREVIEW_MIN_ZOOM = 1;
+const PREVIEW_MAX_ZOOM = 4;
 
 let pendingFilePath = null;
 let pendingRotation = 0;
 let pendingCrop = { ...FULL_CROP };
 let suggestedCrop = null; // what "Reset Crop" goes back to
+
+// Zoom changes the image's real rendered size (not a CSS transform), so
+// clientWidth/clientHeight (used by renderCropBox) and getBoundingClientRect
+// (used by clientToFraction, for drag math) stay consistent with each other
+// at any zoom level -- a transform would visually scale the image while
+// leaving clientWidth/clientHeight at the pre-scale size, throwing the crop
+// overlay out of sync with what's actually on screen.
+let previewZoom = 1;
+let previewBaseWidth = 0; // the natural-fit width at zoom 1, captured once per image
+
+function applyZoom() {
+  if (previewBaseWidth === 0) previewBaseWidth = previewImage.clientWidth;
+  // The stylesheet's max-width/max-height (which cap the natural-fit size)
+  // would otherwise clamp an explicit width right back down, since
+  // max-width always wins over width regardless of which is inline.
+  previewImage.style.maxWidth = 'none';
+  previewImage.style.maxHeight = 'none';
+  previewImage.style.width = `${previewBaseWidth * previewZoom}px`;
+  zoomLevelLabel.textContent = `${Math.round(previewZoom * 100)}%`;
+  renderCropBox();
+}
+
+function resetZoom() {
+  previewZoom = 1;
+  previewBaseWidth = 0;
+  previewImage.style.width = '';
+  previewImage.style.maxWidth = '';
+  previewImage.style.maxHeight = '';
+  zoomLevelLabel.textContent = '100%';
+}
+
+previewZoomInBtn.addEventListener('click', () => {
+  previewZoom = Math.min(PREVIEW_MAX_ZOOM, previewZoom + PREVIEW_ZOOM_STEP);
+  applyZoom();
+});
+previewZoomOutBtn.addEventListener('click', () => {
+  previewZoom = Math.max(PREVIEW_MIN_ZOOM, previewZoom - PREVIEW_ZOOM_STEP);
+  applyZoom();
+});
 
 function renderCropBox() {
   // Position the overlay box in on-screen pixels relative to the image's
@@ -234,6 +282,7 @@ async function refreshPreviewImage() {
   const result = await window.api.getImagePreview(pendingFilePath, pendingRotation);
   suggestedCrop = result.suggestedCrop || FULL_CROP;
   pendingCrop = { ...suggestedCrop };
+  resetZoom();
   await new Promise((resolve) => {
     previewImage.onload = resolve;
     previewImage.src = result.dataUrl;

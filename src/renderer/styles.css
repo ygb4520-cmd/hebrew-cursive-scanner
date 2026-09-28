@@ -263,7 +263,10 @@ body {
   padding: 12px;
   min-height: 240px;
   max-height: 50vh;
-  overflow: hidden;
+  /* Was hidden -- zooming in can make the image bigger than this frame, and
+     scrolling (rather than clipping) is how you actually get to look closer
+     at a corner instead of just cutting it off. */
+  overflow: auto;
 }
 .preview-image {
   max-width: 100%;
