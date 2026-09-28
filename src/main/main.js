@@ -264,11 +264,11 @@ ipcMain.handle('image:pick', async () => {
   return filePath;
 });
 
-ipcMain.handle('image:preview', (_event, filePath, rotationDegrees) =>
-  generatePreviewDataUrl(filePath, rotationDegrees)
+ipcMain.handle('image:preview', (_event, filePath, rotationDegrees, fineRotationDegrees = 0) =>
+  generatePreviewDataUrl(filePath, rotationDegrees, fineRotationDegrees)
 );
 
-ipcMain.handle('note:create-from-file', async (_event, filePath, rotationDegrees = 0, cropBox = null) => {
+ipcMain.handle('note:create-from-file', async (_event, filePath, rotationDegrees = 0, cropBox = null, fineRotationDegrees = 0) => {
   const settings = settingsStore.readSettings();
   if (!settings.syncFolderPath) {
     throw new Error('No sync folder is configured yet. Open Settings and choose one first.');
@@ -277,7 +277,7 @@ ipcMain.handle('note:create-from-file', async (_event, filePath, rotationDegrees
     throw new Error('No Gemini API key is configured yet. Open Settings and paste your free API key first.');
   }
 
-  const { buffer, storedExtension } = await loadImageForTranscription(filePath, rotationDegrees, cropBox);
+  const { buffer, storedExtension } = await loadImageForTranscription(filePath, rotationDegrees, cropBox, fineRotationDegrees);
   const apiKey = apiKeyStore.getApiKey();
   const { text, lineBoxes, segmentationMethod } = await transcribeByLines(apiKey, buffer, (progress) => {
     mainWindow?.webContents.send('note:progress', progress);

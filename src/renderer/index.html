@@ -53,6 +53,12 @@
           <button id="zoomInBtn" class="btn-secondary">+ Zoom</button>
           <span id="zoomLevelLabel" class="muted small">100%</span>
         </div>
+        <div class="row" style="align-items: center; justify-content: center; margin-top: 8px;">
+          <label for="fineTiltSlider" class="muted small">Fine-tune tilt (if auto-straighten missed it):</label>
+          <input type="range" id="fineTiltSlider" min="-10" max="10" step="0.5" value="0" />
+          <span id="fineTiltLabel" class="muted small">0°</span>
+          <button id="resetTiltBtn" class="btn-secondary">Reset Tilt</button>
+        </div>
         <div class="modal-actions">
           <button id="cancelPreviewBtn" class="btn-secondary">Cancel</button>
           <button id="confirmTranscribeBtn" class="btn-primary">Transcribe</button>

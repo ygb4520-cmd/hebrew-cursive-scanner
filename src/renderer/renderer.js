@@ -183,10 +183,10 @@ window.api.onImportProgress((progress) => {
   importStatus.textContent = progressMessage(progress);
 });
 
-async function importFromPath(filePath, rotationDegrees, cropBox) {
+async function importFromPath(filePath, rotationDegrees, cropBox, fineRotationDegrees) {
   setImporting(true, 'Finding lines of text…');
   try {
-    const note = await window.api.createNoteFromFile(filePath, rotationDegrees, cropBox);
+    const note = await window.api.createNoteFromFile(filePath, rotationDegrees, cropBox, fineRotationDegrees);
     await loadNotes();
     selectNote(note.id);
     setImporting(false, 'Done.');
@@ -211,6 +211,9 @@ const resetCropBtn = document.getElementById('resetCropBtn');
 const previewZoomInBtn = document.getElementById('zoomInBtn');
 const previewZoomOutBtn = document.getElementById('zoomOutBtn');
 const zoomLevelLabel = document.getElementById('zoomLevelLabel');
+const fineTiltSlider = document.getElementById('fineTiltSlider');
+const fineTiltLabel = document.getElementById('fineTiltLabel');
+const resetTiltBtn = document.getElementById('resetTiltBtn');
 const cancelPreviewBtn = document.getElementById('cancelPreviewBtn');
 const confirmTranscribeBtn = document.getElementById('confirmTranscribeBtn');
 
@@ -225,6 +228,7 @@ const PREVIEW_MAX_ZOOM = 4;
 
 let pendingFilePath = null;
 let pendingRotation = 0;
+let pendingFineRotation = 0; // manual override on top of auto-deskew, see imageUtils.js
 let pendingCrop = { ...FULL_CROP };
 let suggestedCrop = null; // what "Reset Crop" goes back to
 
@@ -279,7 +283,7 @@ function renderCropBox() {
 }
 
 async function refreshPreviewImage() {
-  const result = await window.api.getImagePreview(pendingFilePath, pendingRotation);
+  const result = await window.api.getImagePreview(pendingFilePath, pendingRotation, pendingFineRotation);
   suggestedCrop = result.suggestedCrop || FULL_CROP;
   pendingCrop = { ...suggestedCrop };
   resetZoom();
@@ -290,9 +294,36 @@ async function refreshPreviewImage() {
   renderCropBox();
 }
 
+function resetFineTilt() {
+  pendingFineRotation = 0;
+  fineTiltSlider.value = '0';
+  fineTiltLabel.textContent = '0°';
+}
+
+// The slider fires continuously while dragging, but each preview refresh is
+// a real backend round-trip (re-render + re-deskew), so debounce to one
+// request after the user actually settles on a value -- same "full round
+// trip, not instant" tradeoff the rotate buttons already make.
+let fineTiltDebounceTimer = null;
+fineTiltSlider.addEventListener('input', () => {
+  pendingFineRotation = parseFloat(fineTiltSlider.value);
+  fineTiltLabel.textContent = `${pendingFineRotation}°`;
+  clearTimeout(fineTiltDebounceTimer);
+  fineTiltDebounceTimer = setTimeout(() => {
+    refreshPreviewImage();
+  }, 350);
+});
+
+resetTiltBtn.addEventListener('click', () => {
+  clearTimeout(fineTiltDebounceTimer);
+  resetFineTilt();
+  refreshPreviewImage();
+});
+
 async function openPreview(filePath) {
   pendingFilePath = filePath;
   pendingRotation = 0;
+  resetFineTilt();
   previewModal.classList.remove('hidden');
   try {
     await refreshPreviewImage();
@@ -310,10 +341,15 @@ function closePreview() {
 
 rotateLeftBtn.addEventListener('click', async () => {
   pendingRotation = (pendingRotation - 90 + 360) % 360;
+  // A 90-degree change reframes the whole image -- auto-deskew will run
+  // fresh against the new orientation, so a prior fine-tilt value no longer
+  // means anything.
+  resetFineTilt();
   await refreshPreviewImage();
 });
 rotateRightBtn.addEventListener('click', async () => {
   pendingRotation = (pendingRotation + 90) % 360;
+  resetFineTilt();
   await refreshPreviewImage();
 });
 resetCropBtn.addEventListener('click', () => {
@@ -325,8 +361,9 @@ confirmTranscribeBtn.addEventListener('click', async () => {
   const filePath = pendingFilePath;
   const rotation = pendingRotation;
   const crop = pendingCrop;
+  const fineRotation = pendingFineRotation;
   closePreview();
-  await importFromPath(filePath, rotation, crop);
+  await importFromPath(filePath, rotation, crop, fineRotation);
 });
 
 // ---- Crop box dragging (resize via corner handles, move via the box itself) ----

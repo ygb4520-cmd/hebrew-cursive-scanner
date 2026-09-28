@@ -214,7 +214,13 @@ async function renderPdfFirstPageToPng(pdfBuffer) {
 // cropBox: optional { left, top, right, bottom } as fractions (0-1) of the
 // ALREADY-ROTATED image, matching what the import preview shows -- applied
 // after rotation so coordinates line up with what the user saw/adjusted.
-async function loadImageForTranscription(filePath, manualRotationDegrees = 0, cropBox = null) {
+// fineRotationDegrees: an optional small manual override (e.g. -10 to 10),
+// applied AFTER auto-deskew and before crop -- for the rare case where
+// automatic skew detection gets it wrong. Applying it before auto-deskew
+// instead would risk the two fighting each other: correctSkew would just
+// try to re-level whatever the manual adjustment produced, potentially
+// undoing the very fix the user just made.
+async function loadImageForTranscription(filePath, manualRotationDegrees = 0, cropBox = null, fineRotationDegrees = 0) {
   const ext = path.extname(filePath).toLowerCase();
   if (!SUPPORTED_EXTENSIONS.includes(ext)) {
     throw new Error(`Unsupported file type "${ext}". Please choose a JPG, PNG, HEIC photo, or PDF.`);
@@ -241,6 +247,9 @@ async function loadImageForTranscription(filePath, manualRotationDegrees = 0, cr
     // rendering itself introduces no tilt -- confirmed on a real test page
     // this exact session (visibly slanted lines from a crooked scan).
     buffer = await correctSkew(buffer);
+    if (fineRotationDegrees) {
+      buffer = await sharp(buffer).rotate(fineRotationDegrees, { background: '#ffffff' }).toBuffer();
+    }
     if (cropBox) {
       buffer = await applyCrop(buffer, cropBox);
     }
@@ -287,6 +296,11 @@ async function loadImageForTranscription(filePath, manualRotationDegrees = 0, cr
   // segmentation, transcription, and the saved photo all end up using the
   // same leveled buffer this way (see detectSkewAngle for why this matters).
   buffer = await correctSkew(buffer);
+
+  // Manual override, applied after auto-deskew -- see the fineRotationDegrees param doc above.
+  if (fineRotationDegrees) {
+    buffer = await sharp(buffer).rotate(fineRotationDegrees, { background: '#ffffff' }).toBuffer();
+  }
 
   if (cropBox) {
     buffer = await applyCrop(buffer, cropBox);
@@ -407,8 +421,8 @@ async function prepareImagesForGemini(buffer) {
 // manual rotation), resized down for a fast, cheap round trip on every
 // rotate click, plus a suggested crop box computed on the same (rotated)
 // image so its fractions line up with what's displayed.
-async function generatePreviewDataUrl(filePath, rotationDegrees) {
-  const { buffer } = await loadImageForTranscription(filePath, rotationDegrees);
+async function generatePreviewDataUrl(filePath, rotationDegrees, fineRotationDegrees = 0) {
+  const { buffer } = await loadImageForTranscription(filePath, rotationDegrees, null, fineRotationDegrees);
   const [previewBuffer, suggestedCrop] = await Promise.all([
     sharp(buffer).resize({ width: 700, height: 700, fit: 'inside' }).jpeg({ quality: 80 }).toBuffer(),
     detectPageBoundingBox(buffer),
