@@ -266,17 +266,17 @@ ipcMain.handle('image:pick', async () => {
   return filePath;
 });
 
-ipcMain.handle('image:preview', (_event, filePath, rotationDegrees, fineRotationDegrees = 0) =>
-  generatePreviewDataUrl(filePath, rotationDegrees, fineRotationDegrees)
+ipcMain.handle('image:preview', (_event, filePath, rotationDegrees, fineRotationDegrees = 0, pageNumber = 1) =>
+  generatePreviewDataUrl(filePath, rotationDegrees, fineRotationDegrees, pageNumber)
 );
 
 // Returns an array of notes, always -- one per PDF page for a multi-page
 // PDF (each page becomes its own note, same as if you'd imported it
-// separately), or a single-element array otherwise. The rotation/crop/
-// fine-tilt the user chose in the preview (always against page 1) applies
-// to every page, on the assumption a multi-page scan was captured
-// consistently -- there's no per-page review step.
-ipcMain.handle('note:create-from-file', async (_event, filePath, rotationDegrees = 0, cropBox = null, fineRotationDegrees = 0) => {
+// separately), or a single-element array otherwise. `pagesSettings` carries
+// one { rotationDegrees, cropBox, fineRotationDegrees } entry per page, in
+// order, since the preview now lets each page be reviewed and adjusted on
+// its own rather than forcing every page to share page 1's rotation/crop.
+ipcMain.handle('note:create-from-file', async (_event, filePath, pagesSettings = []) => {
   const settings = settingsStore.readSettings();
   if (!settings.syncFolderPath) {
     throw new Error('No sync folder is configured yet. Open Settings and choose one first.');
@@ -293,6 +293,11 @@ ipcMain.handle('note:create-from-file', async (_event, filePath, rotationDegrees
   const apiKey = apiKeyStore.getApiKey();
   const notes = [];
   for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
+    const {
+      rotationDegrees = 0,
+      cropBox = null,
+      fineRotationDegrees = 0,
+    } = pagesSettings[pageNumber - 1] || {};
     const { buffer, storedExtension } = await loadImageForTranscription(
       filePath,
       rotationDegrees,

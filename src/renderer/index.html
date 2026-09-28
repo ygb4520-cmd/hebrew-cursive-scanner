@@ -35,6 +35,12 @@
           the page — background around the page can throw off line detection.
         </p>
         <p id="multiPageNotice" class="status-line hidden"></p>
+        <div id="pageNavRow" class="row hidden" style="align-items: center; justify-content: center; gap: 8px;">
+          <button id="prevPageBtn" class="btn-secondary">◀ Prev Page</button>
+          <span id="pageIndicator" class="muted small">Page 1 of 1</span>
+          <select id="pageJumpSelect"></select>
+          <button id="nextPageBtn" class="btn-secondary">Next Page ▶</button>
+        </div>
         <div class="preview-frame" id="previewFrame">
           <div class="crop-container" id="cropContainer">
             <img id="previewImage" class="preview-image" />

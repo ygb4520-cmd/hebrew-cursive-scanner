@@ -443,8 +443,8 @@ async function prepareImagesForGemini(buffer) {
 // image so its fractions line up with what's displayed. Always previews
 // page 1 of a PDF; pageCount tells the caller whether there are more
 // pages that importing will also create notes from (see main.js).
-async function generatePreviewDataUrl(filePath, rotationDegrees, fineRotationDegrees = 0) {
-  const { buffer } = await loadImageForTranscription(filePath, rotationDegrees, null, fineRotationDegrees);
+async function generatePreviewDataUrl(filePath, rotationDegrees, fineRotationDegrees = 0, pageNumber = 1) {
+  const { buffer } = await loadImageForTranscription(filePath, rotationDegrees, null, fineRotationDegrees, pageNumber);
   const [previewBuffer, suggestedCrop] = await Promise.all([
     sharp(buffer).resize({ width: 700, height: 700, fit: 'inside' }).jpeg({ quality: 80 }).toBuffer(),
     detectPageBoundingBox(buffer),

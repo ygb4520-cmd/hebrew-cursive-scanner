@@ -184,12 +184,12 @@ window.api.onImportProgress((progress) => {
   importStatus.textContent = progressMessage(progress);
 });
 
-async function importFromPath(filePath, rotationDegrees, cropBox, fineRotationDegrees) {
+async function importFromPath(filePath, pagesSettings) {
   setImporting(true, 'Finding lines of text…');
   try {
     // Always an array now -- more than one entry for a multi-page PDF
     // (one note per page), a single entry otherwise.
-    const notes = await window.api.createNoteFromFile(filePath, rotationDegrees, cropBox, fineRotationDegrees);
+    const notes = await window.api.createNoteFromFile(filePath, pagesSettings);
     await loadNotes();
     selectNote(notes[0].id);
     setImporting(false, notes.length > 1 ? `Created ${notes.length} notes, one per page.` : 'Done.');
@@ -207,6 +207,11 @@ async function importFromPath(filePath, rotationDegrees, cropBox, fineRotationDe
 
 const previewModal = document.getElementById('previewModal');
 const multiPageNotice = document.getElementById('multiPageNotice');
+const pageNavRow = document.getElementById('pageNavRow');
+const prevPageBtn = document.getElementById('prevPageBtn');
+const nextPageBtn = document.getElementById('nextPageBtn');
+const pageIndicator = document.getElementById('pageIndicator');
+const pageJumpSelect = document.getElementById('pageJumpSelect');
 const previewImage = document.getElementById('previewImage');
 const cropBoxEl = document.getElementById('cropBox');
 const rotateLeftBtn = document.getElementById('rotateLeftBtn');
@@ -235,6 +240,15 @@ let pendingRotation = 0;
 let pendingFineRotation = 0; // manual override on top of auto-deskew, see imageUtils.js
 let pendingCrop = { ...FULL_CROP };
 let suggestedCrop = null; // what "Reset Crop" goes back to
+
+// Per-page rotation/tilt/crop for a multi-page PDF, keyed by 1-indexed page
+// number, so each page can be reviewed and adjusted independently instead of
+// forcing every page to share whatever page 1 was set to. pending* above
+// always reflects the page currently on screen (currentPageNumber); a page's
+// entry here is written whenever we navigate away from it or confirm.
+let pageSettingsByNumber = {};
+let currentPageNumber = 1;
+let totalPageCount = 1;
 
 // Zoom changes the image's real rendered size (not a CSS transform), so
 // clientWidth/clientHeight (used by renderCropBox) and getBoundingClientRect
@@ -286,10 +300,21 @@ function renderCropBox() {
   cropBoxEl.style.height = `${(pendingCrop.bottom - pendingCrop.top) * h}px`;
 }
 
-async function refreshPreviewImage() {
-  const result = await window.api.getImagePreview(pendingFilePath, pendingRotation, pendingFineRotation);
+// resetCrop: true after a rotation/tilt change, since the crop box's saved
+// fractions no longer line up with the reframed image -- false when just
+// navigating to a page whose crop we already have stored (loaded into
+// pendingCrop by the caller before this runs).
+async function refreshPreviewImage({ resetCrop = true } = {}) {
+  const result = await window.api.getImagePreview(
+    pendingFilePath,
+    pendingRotation,
+    pendingFineRotation,
+    currentPageNumber
+  );
   suggestedCrop = result.suggestedCrop || FULL_CROP;
-  pendingCrop = { ...suggestedCrop };
+  if (resetCrop) {
+    pendingCrop = { ...suggestedCrop };
+  }
   resetZoom();
   await new Promise((resolve) => {
     previewImage.onload = resolve;
@@ -297,18 +322,71 @@ async function refreshPreviewImage() {
   });
   renderCropBox();
 
-  // This preview always shows page 1 -- for a multi-page PDF, say so up
-  // front, since the rotation/crop chosen here will apply to every page and
-  // importing will create one note per page, not one note total.
-  if (result.pageCount > 1) {
+  totalPageCount = result.pageCount;
+  if (totalPageCount > 1) {
     multiPageNotice.textContent =
-      `This PDF has ${result.pageCount} pages — importing will create ${result.pageCount} separate notes ` +
-      `(one per page), all using this same rotation and crop.`;
+      `This PDF has ${totalPageCount} pages — importing will create ${totalPageCount} separate notes ` +
+      `(one per page). Review each page below; any page you don't visit will use page 1's rotation and crop.`;
     multiPageNotice.classList.remove('hidden');
+    pageNavRow.classList.remove('hidden');
+    updatePageNavUI();
   } else {
     multiPageNotice.classList.add('hidden');
+    pageNavRow.classList.add('hidden');
   }
 }
+
+function updatePageNavUI() {
+  pageIndicator.textContent = `Page ${currentPageNumber} of ${totalPageCount}`;
+  prevPageBtn.disabled = currentPageNumber <= 1;
+  nextPageBtn.disabled = currentPageNumber >= totalPageCount;
+
+  if (pageJumpSelect.options.length !== totalPageCount) {
+    pageJumpSelect.innerHTML = '';
+    for (let p = 1; p <= totalPageCount; p++) {
+      const option = document.createElement('option');
+      option.value = String(p);
+      const customized = pageSettingsByNumber[p] ? ' (customized)' : '';
+      option.textContent = `Page ${p}${customized}`;
+      pageJumpSelect.appendChild(option);
+    }
+  } else {
+    // Options already exist -- just refresh the "(customized)" suffixes.
+    Array.from(pageJumpSelect.options).forEach((option, i) => {
+      const p = i + 1;
+      const customized = pageSettingsByNumber[p] ? ' (customized)' : '';
+      option.textContent = `Page ${p}${customized}`;
+    });
+  }
+  pageJumpSelect.value = String(currentPageNumber);
+}
+
+function saveCurrentPageSettings() {
+  pageSettingsByNumber[currentPageNumber] = {
+    rotation: pendingRotation,
+    fineRotation: pendingFineRotation,
+    crop: pendingCrop,
+  };
+}
+
+async function switchToPage(newPageNumber) {
+  if (newPageNumber === currentPageNumber || newPageNumber < 1 || newPageNumber > totalPageCount) return;
+  saveCurrentPageSettings();
+  currentPageNumber = newPageNumber;
+
+  const saved = pageSettingsByNumber[currentPageNumber];
+  pendingRotation = saved ? saved.rotation : 0;
+  pendingFineRotation = saved ? saved.fineRotation : 0;
+  fineTiltSlider.value = String(pendingFineRotation);
+  fineTiltLabel.textContent = `${pendingFineRotation}°`;
+  if (saved) pendingCrop = { ...saved.crop };
+
+  await refreshPreviewImage({ resetCrop: !saved });
+}
+
+prevPageBtn.addEventListener('click', () => switchToPage(currentPageNumber - 1));
+nextPageBtn.addEventListener('click', () => switchToPage(currentPageNumber + 1));
+pageJumpSelect.addEventListener('change', () => switchToPage(parseInt(pageJumpSelect.value, 10)));
 
 function resetFineTilt() {
   pendingFineRotation = 0;
@@ -340,6 +418,9 @@ async function openPreview(filePath) {
   pendingFilePath = filePath;
   pendingRotation = 0;
   resetFineTilt();
+  pageSettingsByNumber = {};
+  currentPageNumber = 1;
+  totalPageCount = 1;
   previewModal.classList.remove('hidden');
   try {
     await refreshPreviewImage();
@@ -375,11 +456,25 @@ resetCropBtn.addEventListener('click', () => {
 cancelPreviewBtn.addEventListener('click', closePreview);
 confirmTranscribeBtn.addEventListener('click', async () => {
   const filePath = pendingFilePath;
-  const rotation = pendingRotation;
-  const crop = pendingCrop;
-  const fineRotation = pendingFineRotation;
+  saveCurrentPageSettings();
+
+  // Build one settings entry per page. A page the user never visited falls
+  // back to page 1's settings, on the assumption a consistently-captured
+  // multi-page scan usually needs the same rotation/crop throughout --
+  // reviewing every single page isn't required, just available.
+  const page1 = pageSettingsByNumber[1] || { rotation: 0, fineRotation: 0, crop: null };
+  const pagesSettings = [];
+  for (let p = 1; p <= totalPageCount; p++) {
+    const s = pageSettingsByNumber[p] || page1;
+    pagesSettings.push({
+      rotationDegrees: s.rotation,
+      cropBox: s.crop,
+      fineRotationDegrees: s.fineRotation,
+    });
+  }
+
   closePreview();
-  await importFromPath(filePath, rotation, crop, fineRotation);
+  await importFromPath(filePath, pagesSettings);
 });
 
 // ---- Crop box dragging (resize via corner handles, move via the box itself) ----

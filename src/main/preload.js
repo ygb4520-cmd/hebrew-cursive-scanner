@@ -25,10 +25,10 @@ contextBridge.exposeInMainWorld('api', {
   clearFallbackApiKey: () => ipcRenderer.invoke('apikey:fallback:clear'),
 
   pickImage: () => ipcRenderer.invoke('image:pick'),
-  getImagePreview: (filePath, rotationDegrees, fineRotationDegrees) =>
-    ipcRenderer.invoke('image:preview', filePath, rotationDegrees, fineRotationDegrees),
-  createNoteFromFile: (filePath, rotationDegrees, cropBox, fineRotationDegrees) =>
-    ipcRenderer.invoke('note:create-from-file', filePath, rotationDegrees, cropBox, fineRotationDegrees),
+  getImagePreview: (filePath, rotationDegrees, fineRotationDegrees, pageNumber) =>
+    ipcRenderer.invoke('image:preview', filePath, rotationDegrees, fineRotationDegrees, pageNumber),
+  createNoteFromFile: (filePath, pagesSettings) =>
+    ipcRenderer.invoke('note:create-from-file', filePath, pagesSettings),
   updateNoteText: (id, text) => ipcRenderer.invoke('note:update-text', { id, text }),
   listNotes: () => ipcRenderer.invoke('notes:list'),
   revealInFolder: (filePath) => ipcRenderer.invoke('notes:reveal', filePath),
