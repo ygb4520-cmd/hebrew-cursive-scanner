@@ -170,16 +170,10 @@ function isSupportedImage(filePath) {
   return SUPPORTED_EXTENSIONS.includes(path.extname(filePath).toLowerCase());
 }
 
-// Renders a PDF's first page to a PNG buffer, so it can flow through the
-// exact same rotate/crop/segment/transcribe pipeline as a regular photo.
-// Only the first page is used for now -- multi-page scan support would need
-// its own per-page review flow, out of scope for this first pass. pdfjs-dist
-// is ESM-only, hence the dynamic import from this CommonJS file.
-async function renderPdfFirstPageToPng(pdfBuffer) {
+// pdfjs-dist is ESM-only, hence the dynamic import from this CommonJS file.
+async function openPdfDocument(pdfBuffer) {
   const pdfjsLib = await import('pdfjs-dist/legacy/build/pdf.mjs');
-  const { createCanvas } = require('@napi-rs/canvas');
-
-  const doc = await pdfjsLib.getDocument({
+  return pdfjsLib.getDocument({
     data: new Uint8Array(pdfBuffer),
     disableWorker: true,
     standardFontDataUrl: path.join(
@@ -187,8 +181,26 @@ async function renderPdfFirstPageToPng(pdfBuffer) {
       'standard_fonts/'
     ),
   }).promise;
+}
 
-  const page = await doc.getPage(1);
+// How many pages a PDF has, without fully rendering any of them -- used to
+// decide up front whether an import will produce one note or several (see
+// createNoteFromFile in main.js).
+async function getPdfPageCount(pdfBuffer) {
+  const doc = await openPdfDocument(pdfBuffer);
+  return doc.numPages;
+}
+
+// Renders one page (1-indexed) of a PDF to a PNG buffer, so it can flow
+// through the exact same rotate/crop/segment/transcribe pipeline as a
+// regular photo. A multi-page PDF is handled by calling this once per page
+// (see main.js) and creating one note per page, rather than trying to
+// merge multiple physical pages into a single note.
+async function renderPdfPageToPng(pdfBuffer, pageNumber) {
+  const { createCanvas } = require('@napi-rs/canvas');
+  const doc = await openPdfDocument(pdfBuffer);
+
+  const page = await doc.getPage(pageNumber);
   // Scale so the longer edge lands around 3000px -- comparable to a real
   // phone/tablet photo's resolution, plenty for OCR on a text page.
   const baseViewport = page.getViewport({ scale: 1 });
@@ -220,7 +232,15 @@ async function renderPdfFirstPageToPng(pdfBuffer) {
 // instead would risk the two fighting each other: correctSkew would just
 // try to re-level whatever the manual adjustment produced, potentially
 // undoing the very fix the user just made.
-async function loadImageForTranscription(filePath, manualRotationDegrees = 0, cropBox = null, fineRotationDegrees = 0) {
+// pdfPageNumber: which page (1-indexed) to render, for a multi-page PDF --
+// see createNoteFromFile in main.js, which calls this once per page.
+async function loadImageForTranscription(
+  filePath,
+  manualRotationDegrees = 0,
+  cropBox = null,
+  fineRotationDegrees = 0,
+  pdfPageNumber = 1
+) {
   const ext = path.extname(filePath).toLowerCase();
   if (!SUPPORTED_EXTENSIONS.includes(ext)) {
     throw new Error(`Unsupported file type "${ext}". Please choose a JPG, PNG, HEIC photo, or PDF.`);
@@ -236,7 +256,7 @@ async function loadImageForTranscription(filePath, manualRotationDegrees = 0, cr
     // A rendered PDF page has no EXIF orientation concept -- pdfjs already
     // applies the page's own /Rotate attribute when present, and the user's
     // manual rotation (below) covers anything left over.
-    workingBuffer = await renderPdfFirstPageToPng(rawBuffer);
+    workingBuffer = await renderPdfPageToPng(rawBuffer, pdfPageNumber);
     mimeType = 'image/png';
     storedExtension = '.png';
     let buffer = workingBuffer;
@@ -420,16 +440,29 @@ async function prepareImagesForGemini(buffer) {
 // reuses the same orientation logic as the real transcription path (EXIF +
 // manual rotation), resized down for a fast, cheap round trip on every
 // rotate click, plus a suggested crop box computed on the same (rotated)
-// image so its fractions line up with what's displayed.
+// image so its fractions line up with what's displayed. Always previews
+// page 1 of a PDF; pageCount tells the caller whether there are more
+// pages that importing will also create notes from (see main.js).
 async function generatePreviewDataUrl(filePath, rotationDegrees, fineRotationDegrees = 0) {
   const { buffer } = await loadImageForTranscription(filePath, rotationDegrees, null, fineRotationDegrees);
   const [previewBuffer, suggestedCrop] = await Promise.all([
     sharp(buffer).resize({ width: 700, height: 700, fit: 'inside' }).jpeg({ quality: 80 }).toBuffer(),
     detectPageBoundingBox(buffer),
   ]);
+
+  let pageCount = 1;
+  if (path.extname(filePath).toLowerCase() === '.pdf') {
+    try {
+      pageCount = await getPdfPageCount(fs.readFileSync(filePath));
+    } catch {
+      pageCount = 1; // couldn't read page count -- treat as single-page rather than block the preview
+    }
+  }
+
   return {
     dataUrl: `data:image/jpeg;base64,${previewBuffer.toString('base64')}`,
     suggestedCrop,
+    pageCount,
   };
 }
 
@@ -440,5 +473,6 @@ module.exports = {
   generatePreviewDataUrl,
   detectPageBoundingBox,
   detectSkewAngle,
+  getPdfPageCount,
   SUPPORTED_EXTENSIONS,
 };

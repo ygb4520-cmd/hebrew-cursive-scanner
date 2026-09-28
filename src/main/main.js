@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('path');
+const fs = require('fs');
 
 // Opt-in test-profile redirect, active only when HCS_TEST_USERDATA_DIR is
 // set at launch -- normal launches are completely unaffected. Points every
@@ -20,6 +21,7 @@ const {
   loadImageForTranscription,
   prepareImagesForGemini,
   generatePreviewDataUrl,
+  getPdfPageCount,
 } = require('./imageUtils');
 const { segmentIntoLines, segmentIntoLinesViaVision } = require('./lineSegmenter');
 const gemini = require('./gemini');
@@ -268,6 +270,12 @@ ipcMain.handle('image:preview', (_event, filePath, rotationDegrees, fineRotation
   generatePreviewDataUrl(filePath, rotationDegrees, fineRotationDegrees)
 );
 
+// Returns an array of notes, always -- one per PDF page for a multi-page
+// PDF (each page becomes its own note, same as if you'd imported it
+// separately), or a single-element array otherwise. The rotation/crop/
+// fine-tilt the user chose in the preview (always against page 1) applies
+// to every page, on the assumption a multi-page scan was captured
+// consistently -- there's no per-page review step.
 ipcMain.handle('note:create-from-file', async (_event, filePath, rotationDegrees = 0, cropBox = null, fineRotationDegrees = 0) => {
   const settings = settingsStore.readSettings();
   if (!settings.syncFolderPath) {
@@ -277,20 +285,36 @@ ipcMain.handle('note:create-from-file', async (_event, filePath, rotationDegrees
     throw new Error('No Gemini API key is configured yet. Open Settings and paste your free API key first.');
   }
 
-  const { buffer, storedExtension } = await loadImageForTranscription(filePath, rotationDegrees, cropBox, fineRotationDegrees);
-  const apiKey = apiKeyStore.getApiKey();
-  const { text, lineBoxes, segmentationMethod } = await transcribeByLines(apiKey, buffer, (progress) => {
-    mainWindow?.webContents.send('note:progress', progress);
-  });
+  let pageCount = 1;
+  if (path.extname(filePath).toLowerCase() === '.pdf') {
+    pageCount = await getPdfPageCount(fs.readFileSync(filePath));
+  }
 
-  const note = notesStore.createNote(settings.syncFolderPath, {
-    imageBuffer: buffer,
-    storedExtension,
-    text,
-    lineBoxes,
-    segmentationMethod,
-  });
-  return note;
+  const apiKey = apiKeyStore.getApiKey();
+  const notes = [];
+  for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
+    const { buffer, storedExtension } = await loadImageForTranscription(
+      filePath,
+      rotationDegrees,
+      cropBox,
+      fineRotationDegrees,
+      pageNumber
+    );
+    const { text, lineBoxes, segmentationMethod } = await transcribeByLines(apiKey, buffer, (progress) => {
+      mainWindow?.webContents.send('note:progress', { ...progress, pageNumber, pageCount });
+    });
+
+    notes.push(
+      notesStore.createNote(settings.syncFolderPath, {
+        imageBuffer: buffer,
+        storedExtension,
+        text,
+        lineBoxes,
+        segmentationMethod,
+      })
+    );
+  }
+  return notes;
 });
 
 ipcMain.handle('note:update-text', (_event, { id, text }) => {

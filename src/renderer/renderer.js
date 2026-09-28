@@ -167,15 +167,16 @@ function setImporting(isImporting, message) {
 }
 
 function progressMessage(progress) {
+  const pagePrefix = progress.pageCount > 1 ? `Page ${progress.pageNumber} of ${progress.pageCount}: ` : '';
   switch (progress.phase) {
     case 'segmenting':
-      return 'Finding lines of text…';
+      return `${pagePrefix}Finding lines of text…`;
     case 'whole-page':
-      return 'Could not confidently split into lines — transcribing the whole page…';
+      return `${pagePrefix}Could not confidently split into lines — transcribing the whole page…`;
     case 'transcribing':
-      return `Transcribing line ${progress.done}/${progress.total}…`;
+      return `${pagePrefix}Transcribing line ${progress.done}/${progress.total}…`;
     default:
-      return 'Transcribing…';
+      return `${pagePrefix}Transcribing…`;
   }
 }
 
@@ -186,10 +187,12 @@ window.api.onImportProgress((progress) => {
 async function importFromPath(filePath, rotationDegrees, cropBox, fineRotationDegrees) {
   setImporting(true, 'Finding lines of text…');
   try {
-    const note = await window.api.createNoteFromFile(filePath, rotationDegrees, cropBox, fineRotationDegrees);
+    // Always an array now -- more than one entry for a multi-page PDF
+    // (one note per page), a single entry otherwise.
+    const notes = await window.api.createNoteFromFile(filePath, rotationDegrees, cropBox, fineRotationDegrees);
     await loadNotes();
-    selectNote(note.id);
-    setImporting(false, 'Done.');
+    selectNote(notes[0].id);
+    setImporting(false, notes.length > 1 ? `Created ${notes.length} notes, one per page.` : 'Done.');
   } catch (err) {
     setImporting(false);
     importStatus.textContent = `Import failed: ${err.message}`;
@@ -203,6 +206,7 @@ async function importFromPath(filePath, rotationDegrees, cropBox, fineRotationDe
 // ---------------------------------------------------------------------------
 
 const previewModal = document.getElementById('previewModal');
+const multiPageNotice = document.getElementById('multiPageNotice');
 const previewImage = document.getElementById('previewImage');
 const cropBoxEl = document.getElementById('cropBox');
 const rotateLeftBtn = document.getElementById('rotateLeftBtn');
@@ -292,6 +296,18 @@ async function refreshPreviewImage() {
     previewImage.src = result.dataUrl;
   });
   renderCropBox();
+
+  // This preview always shows page 1 -- for a multi-page PDF, say so up
+  // front, since the rotation/crop chosen here will apply to every page and
+  // importing will create one note per page, not one note total.
+  if (result.pageCount > 1) {
+    multiPageNotice.textContent =
+      `This PDF has ${result.pageCount} pages — importing will create ${result.pageCount} separate notes ` +
+      `(one per page), all using this same rotation and crop.`;
+    multiPageNotice.classList.remove('hidden');
+  } else {
+    multiPageNotice.classList.add('hidden');
+  }
 }
 
 function resetFineTilt() {
