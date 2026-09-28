@@ -528,7 +528,11 @@ function parseVisionEntries(rawText) {
 }
 
 const VISION_MAX_RETRIES = 3;
-const VISION_RETRYABLE_KINDS = new Set(['quota', 'unavailable']);
+// 'network' included alongside 'quota'/'unavailable' for the same reason as
+// main.js's RETRYABLE_ERROR_KINDS -- a failed fetch during a real high-demand
+// episode is more likely the same transient server-side issue than a genuine
+// internet outage.
+const VISION_RETRYABLE_KINDS = new Set(['quota', 'unavailable', 'network']);
 
 // Retries transient failures (rate-limiting, or the "high demand" 503s
 // this exact model is known to hit -- see gemini.js) with backoff on the

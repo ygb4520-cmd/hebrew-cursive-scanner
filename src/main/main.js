@@ -33,7 +33,12 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-const RETRYABLE_ERROR_KINDS = new Set(['quota', 'unavailable']);
+// 'network' (a failed fetch, not an HTTP error response) is included
+// alongside 'quota'/'unavailable' -- confirmed live: a batch that mixed real
+// 503s with "fetch failed" errors across different lines in the SAME run
+// points to the same transient server-side overload dropping some
+// connections outright, not a genuine loss of the user's own internet.
+const RETRYABLE_ERROR_KINDS = new Set(['quota', 'unavailable', 'network']);
 
 async function transcribeLineWithRetry(apiKey, image, fallbackApiKey) {
   for (let attempt = 0; ; attempt++) {
