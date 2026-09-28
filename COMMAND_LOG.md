@@ -739,3 +739,154 @@ with brightness statistics.
   design how this would actually replace or supplement `segmentIntoLines()` in the real pipeline
   (a whole-page Gemini call before per-line transcription -- real quota/cost implications given the
   daily free-tier limit has already been hit twice this project).
+
+### Session (2026-09-25 to 2026-09-28): the vision-detection pivot actually shipped -- v0.3.6
+through v0.3.15, few-shot examples curated from a real page, deskew, multi-page PDFs, and a
+self-inflicted bug caught mid-session before it reached the user
+
+Picked up exactly where the previous session left off (the vision-detection pivot above) and took
+it all the way from research-stage to shipped, across ten version bumps. In version order:
+
+- **v0.3.6** -- Added a second, optional "line-detection API key" (`apiKeyStore.js`: parallel
+  `hasSegmentationApiKey`/`setSegmentationApiKey`/etc., a separate encrypted file, a new
+  `resolveSegmentationApiKey()` that falls back to the transcription key when unset) so the
+  vision-detection call below could eventually use an independent Google Cloud project's quota
+  instead of competing with transcription's. Then actually integrated the vision-detection pivot
+  from the prior session: `segmentIntoLinesViaVision()` in `lineSegmenter.js`, tried FIRST in
+  `transcribeByLines` (`main.js`), falling back to the original deterministic pixel-math
+  `segmentIntoLines()` on any failure -- never a broken import. Crossed-out regions detected by the
+  model are dropped entirely so struck-through text never reaches transcription. Each note now
+  records `segmentationMethod: 'vision' | 'pixel-math' | 'whole-page'` so a garbled note is
+  traceable after the fact. Real testing directly confirmed BOTH the promise and the risk flagged
+  in the prior session's research: on a page with a genuine oversized-band bug, vision detection
+  correctly found all ~24 real physical lines where pixel-math had collapsed them into 7 -- but the
+  same 30-line test page detected 41 lines on one call and returned a hard failure on the very next
+  call, proving the call-to-call inconsistency was real, not a one-off, and confirming the
+  fallback-to-pixel-math wiring is load-bearing, not decorative.
+- **v0.3.7** -- Added a third, optional "fallback API key," used automatically by either the
+  transcription or segmentation key specifically on a `quota` error (never on a bad/wrong key --
+  a different key can't fix an invalid one). Separately, gave the vision-detection call the same
+  retry-with-backoff treatment the per-line transcription path already had (it had none, caught
+  live during testing when a real `gemini-3.5-flash-lite` "high demand" 503 failed it on the very
+  first try). Also fixed a real crash found while generating line crops for the few-shot work
+  below: two vision-detected boxes that already overlapped *before* padding broke the overlap-fix
+  midpoint math, producing a negative-height crop that threw uncaught and would have taken the
+  whole import down instead of falling back to pixel-math like the function promises. Fixed by
+  merging overlapping raw boxes before padding, and wrapping the rest of the geometry in a
+  try/catch so any future edge case in that path degrades to null instead of crashing.
+- **v0.3.8** -- Built and shipped the few-shot transcription-examples feature (`fewShot.js`,
+  `fewShotExamples/`, held uncommitted since an earlier session pending real examples). The user
+  provided a real scanned page ("Scanned Document 3.pdf") and its own correct line-by-line
+  transcription. Curating the 5 examples surfaced a long chain of real crop-boundary bugs in the
+  vision detector, found and fixed via an iterative Artifact-based review tool (published, updated
+  version-by-version as each fix landed): two lines silently merged into one oversized detection
+  (once for a 2-line merge, once for a 3-line and a 4-line merge on the same page) were split at
+  the correct internal boundary using a from-scratch pixel-color-segment scan of the numbered
+  overlay image (since the segmenter itself isn't deterministic call-to-call, re-running it would
+  have invalidated already-confirmed rows); a boundary that cut a significantly slanted line in
+  half (about half its words vertically clipped) was fixed by widening that specific split rather
+  than accepting it as ordinary edge bleed; several *other* minor bleeds between adjacent lines
+  were correctly identified by the user as harmless slant artifacts and deliberately left alone.
+  Final 5 examples picked for deliberate diversity (plain mishnah line, two with mixed
+  English, one dense with abbreviations, one short line) rather than a random sample -- discussed
+  explicitly with the user and agreed a fixed, curated set beats randomizing which 5 of a larger
+  pool get used, since determinism matters for debugging and random luck could just as easily pick
+  5 similar lines and miss the hard cases entirely.
+- **v0.3.9** -- Tuned the existing word-highlight pixel-math (never touched by the vision-detection
+  work) instead of rebuilding it with vision: each word's highlight box now uses that word's own
+  vertical ink extent instead of the whole line's height, and the mismatch-fallback (when detected
+  word-cluster count doesn't match transcribed word count) now maps the word's proportional text
+  position onto the clusters' combined pixel width and weights by cluster width, instead of naive
+  per-cluster-count division. A real bug was caught and fixed via a unit test before shipping:
+  wordBoxes is RTL-ordered (index 0 = rightmost = first word), so naively using the array's own
+  first/last entries as the pixel span silently inverted the mapping direction; fixed by taking the
+  real min/max across all boxes instead of assuming array order matches spatial order.
+- **v0.3.10** -- Automatic camera-tilt correction (`detectSkewAngle`/`correctSkew` in
+  `imageUtils.js`), applied once in `loadImageForTranscription` before any crop, so segmentation,
+  transcription, and the saved photo all end up using the same leveled image. Built after slant
+  had caused several of the real bugs fixed above. Two real methodology bugs found and fixed
+  during testing before this was trustworthy: (1) naively comparing row-darkness variance across
+  candidate rotation angles is confounded by sharp's rotate() expanding the canvas per angle -- a
+  "known good" photo scored a false 9 degrees until every candidate was compared at a fixed window
+  size instead of the raw (size-varying) rotated output; (2) raw grayscale darkness was too weak a
+  signal (real photos have enough mid-tone shading to bury the actual ruled-line/text-row pattern)
+  -- switched to Otsu-binarized ink-pixel counts, the same technique already proven for line
+  detection in `lineSegmenter.js`. Verified against pages with confirmed real slant (now detect a
+  sensible 1-2 degree correction with a genuine bell-shaped confidence peak) and known-level pages
+  (correctly 0 degrees).
+- **v0.3.11** -- Added a real download progress bar to the update banner (`updater.js`'s
+  `downloadAsset` now streams the response and reports bytes-received-vs-content-length, instead of
+  awaiting one opaque `arrayBuffer()`), plus a manual "Check for Updates" button in Settings
+  (v0.3.12) after confirming live that the automatic check only ever runs once at app launch --
+  a release published after the app was already open would never be noticed without a full quit
+  and reopen.
+- **v0.3.13** -- Fixed a real production failure the user hit and pasted in directly: a note where
+  all 7 lines failed, mixing genuine 503 "high demand" errors (already retried) with "fetch failed"
+  errors from OTHER lines in the very same run (not retried at all before this) -- since both
+  failure kinds showed up interleaved in one batch, added `network` to the retryable-error set in
+  both the per-line transcription path and the vision-detection path, on the reasoning that this is
+  far more likely the same transient server-side overload dropping some connections outright than a
+  genuine loss of the user's own internet. Also added zoom to the crop/rotate preview (real layout
+  resize, not a CSS transform, so the existing crop-box fraction math stays correct at any zoom
+  level without its own zoom-aware logic). **Caught a real, serious bug while verifying this**: the
+  zoom code's own `const MIN_ZOOM`/`MAX_ZOOM` collided with an unrelated, pre-existing top-level
+  declaration of the same names (the note-detail photo viewer's own separate zoom feature) --
+  a genuine `SyntaxError: Identifier 'MIN_ZOOM' has already been declared` that silently broke the
+  ENTIRE renderer script, not just the new zoom buttons (confirmed live: Settings stopped opening,
+  every button in the app stopped responding). `node --check` does catch this class of error --
+  the initial syntax check had simply run before this particular edit was in place, a real lesson
+  in re-running the check after every edit that touches top-level declarations, not just once per
+  feature. Renamed to `PREVIEW_MIN_ZOOM`/`PREVIEW_MAX_ZOOM`/`PREVIEW_ZOOM_STEP` and re-verified the
+  whole app (not just zoom) before shipping.
+- **v0.3.14** -- Added a manual fine-tilt slider to the same preview, for the case where
+  auto-deskew (v0.3.10) gets it wrong and there was previously no way to correct it (the existing
+  rotate buttons only do 90-degree flips). Applied AFTER auto-deskew, not before, specifically to
+  avoid the two fighting each other -- verified directly: with no manual adjustment, residual skew
+  after auto-deskew is 0 degrees; with a +5 degree manual override applied on top, the detector
+  correctly reads back approximately -5 degrees residual, confirming the override survives rather
+  than being silently re-leveled away.
+- **v0.3.15** -- Multi-page PDF support. `renderPdfFirstPageToPng` had been hardcoded to
+  `doc.getPage(1)` since the feature was first built; confirmed live on two of the user's own real
+  scanned PDFs (2 and 4 pages each, from switching to a phone document-scanner workflow mid-session)
+  that everything past page 1 was being silently dropped with no warning at all. Split PDF handling
+  into `openPdfDocument`/`getPdfPageCount`/`renderPdfPageToPng(buffer, pageNumber)`, threaded a
+  `pdfPageNumber` param through `loadImageForTranscription`, and made `note:create-from-file` loop
+  over every page, creating one note per page and returning an array always (single-element for
+  anything else). The preview still only shows page 1 (no per-page review step), but now reports
+  the real page count and shows a notice in the modal that importing will create N separate notes,
+  all using whatever rotation/crop/fine-tilt was chosen against page 1. Progress messages during a
+  multi-page import are prefixed "Page X of N" so a slow multi-page transcription doesn't look
+  stuck. Verified against the two real multi-page PDFs: correct page counts, and confirmed every
+  page renders genuinely distinct image bytes (via MD5) rather than accidentally repeating page 1.
+
+**Explicitly declined or deferred** (the user's own calls, not to be silently revisited): a
+"learn from your edits automatically" feature was thought through in detail (original-vs-edited
+text diffing, re-cropping the specific changed line from already-saved `lineBoxes`, surfacing a
+confirm-to-save-as-example prompt) but the user said no outright -- not built, not partially built.
+A domain glossary of recurring terms/abbreviations in the transcription prompt, and giving each
+line's transcription visibility into the previous line's result for context, were both explicitly
+deferred ("not now") via an AskUserQuestion popup, not rejected -- worth raising again later, not
+assuming still wanted.
+
+**A real, still-standing tooling limitation, worth knowing before attempting real end-to-end UI
+tests again**: the Playwright-based debug harness (`scripts/debug-launch.js`) cannot decrypt a
+copy of the real, already-saved API key -- `safeStorage.decryptString` fails consistently
+("Error while decrypting the ciphertext"), even though `hasApiKey()` (a plain file-existence check)
+returns true. This is very likely a macOS Keychain access-control scoping issue tied to exactly how
+Electron was launched, not something fixable from inside this session. The reliable workaround used
+repeatedly this session: bypass the UI/Playwright entirely for anything needing the real key --
+require `apiKeyStore`/`lineSegmenter`/`gemini`/`imageUtils` directly and call their functions from a
+plain script launched via the project's own `electron` binary, with a `package.json` whose `"name"`
+field is exactly `"hebrew-cursive-scanner"` (matching the real app's identity, which the safeStorage
+Keychain entry is scoped to) placed in the same directory as the script. This reads the REAL saved
+key correctly and is what every real-API verification this session actually used; Playwright is
+still fine for UI-only interaction tests (clicks, DOM state) that don't need the decrypted key, as
+used to catch the v0.3.13 duplicate-const regression.
+
+**Not yet done, explicitly raised and still open**: the user tried switching to their phone's
+document-scanner app instead of a plain photo, hoping for better perspective correction than a
+hand-held shot. Checked two of the resulting PDFs directly with `detectSkewAngle` -- both still
+showed real measurable tilt (0.8 and -1.4 degrees), similar magnitude to plain photos, not
+obviously flatter. Not conclusively either a problem with the scanner app or with these specific
+two samples; flagged to the user as genuinely inconclusive rather than claimed as evidence either
+way.
