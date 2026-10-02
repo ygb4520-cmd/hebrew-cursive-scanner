@@ -3,3 +3,6 @@ dist/
 .DS_Store
 *.log
 scripts/debug-out/
+
+# Private working log for the user; never commit or push
+COMMAND_LOG.md
