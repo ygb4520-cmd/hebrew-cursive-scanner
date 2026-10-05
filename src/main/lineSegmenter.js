@@ -388,6 +388,32 @@ function findWordBands(colInkCounts, width, lineHeight) {
   return bands;
 }
 
+// The finest-grained ink pieces of a line, LEFT-TO-RIGHT as [left, right]
+// pixel pairs: every ink run, merged only across anti-aliasing-thin gaps.
+// Unlike findWordBands this makes no word-vs-letter-gap decision -- the
+// renderer groups these into exactly as many words as were transcribed.
+function findInkAtoms(colInkCounts, width, lineHeight) {
+  const smoothed = smooth(colInkCounts, 3);
+  const minInkPixels = Math.max(1, lineHeight * COL_INK_FRACTION);
+  const atoms = [];
+  let current = null;
+  let gapLen = 0;
+  for (let x = 0; x < width; x++) {
+    if (smoothed[x] >= minInkPixels) {
+      if (current && gapLen < MIN_MEANINGFUL_GAP_PX) {
+        current[1] = x;
+      } else {
+        current = [x, x];
+        atoms.push(current);
+      }
+      gapLen = 0;
+    } else {
+      gapLen++;
+    }
+  }
+  return atoms;
+}
+
 async function cleanUpCrop(sharpImage) {
   const buf = await sharpImage.normalize().sharpen().jpeg({ quality: 95 }).toBuffer();
   return { mimeType: 'image/jpeg', data: buf.toString('base64') };
@@ -431,7 +457,20 @@ async function buildLinesFromBands(buffer, data, width, height, threshold, conte
         };
       });
 
-    lines.push({ image, top, bottom, wordBoxes });
+    // Raw ink pieces (unpadded, left-to-right, as image fractions) so the
+    // renderer can re-group them into however many words the transcription
+    // actually has, instead of trusting the blob count detected here.
+    const atoms = findInkAtoms(colInkCounts, width, rawBottom - rawTop + 1).map(([left, right]) => {
+      const [atomTop, atomBottom] = findWordVerticalExtent(data, width, threshold, rawTop, rawBottom, left, right);
+      return {
+        left: left / width,
+        right: (right + 1) / width,
+        top: atomTop / height,
+        bottom: (atomBottom + 1) / height,
+      };
+    });
+
+    lines.push({ image, top, bottom, wordBoxes, atoms, wordPadding: wordPadding / width });
   }
   return lines;
 }
@@ -660,6 +699,10 @@ module.exports = {
   segmentIntoLinesViaVision,
   findLineBands,
   findWordBands,
+  findInkAtoms,
+  getGrayscaleRaw,
+  computeColumnInkCounts,
+  findWordVerticalExtent,
   otsuThreshold,
   trimDenseEdges,
 };

@@ -158,6 +158,8 @@ async function transcribeByLines(apiKey, photoBuffer, sendProgress) {
     top: line.top / height,
     bottom: (line.bottom + 1) / height,
     wordBoxes: line.wordBoxes,
+    atoms: line.atoms,
+    wordPadding: line.wordPadding,
   }));
 
   return { text: lineTexts.join('\n'), lineBoxes, segmentationMethod };

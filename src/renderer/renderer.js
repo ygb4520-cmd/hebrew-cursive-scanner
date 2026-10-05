@@ -661,20 +661,31 @@ async function confirmDelete(id) {
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 6;
 
-function computeHighlightBox(note, lineIndex, wordIndex, lineTokenCounts) {
+function computeHighlightBox(note, lineIndex, wordIndex, lineTokenLengths) {
   const lineBoxes = note.lineBoxes;
   if (!lineBoxes || !lineBoxes[lineIndex]) return null;
   const line = lineBoxes[lineIndex];
   const wordBoxes = line.wordBoxes;
-  const tokenCount = lineTokenCounts[lineIndex] || 0;
+  const wordLengths = lineTokenLengths[lineIndex] || [];
+  const tokenCount = wordLengths.length;
 
-  if (!wordBoxes || wordBoxes.length === 0 || tokenCount === 0) {
+  if (tokenCount === 0) {
+    return { x0: 0, x1: 1, y0: line.top, y1: line.bottom };
+  }
+
+  // Newer notes carry the raw ink pieces; group them into exactly one box
+  // per transcribed word (see wordLayout.js).
+  if (line.atoms && line.atoms.length > 0) {
+    const boxes = window.WordLayout.layoutWords(line.atoms, wordLengths, line.wordPadding || 0);
+    if (boxes && boxes[wordIndex]) return boxes[wordIndex];
+  }
+
+  // Older notes (saved before atoms existed): the earlier blob-matching.
+  if (!wordBoxes || wordBoxes.length === 0) {
     return { x0: 0, x1: 1, y0: line.top, y1: line.bottom };
   }
   if (wordBoxes.length === tokenCount) {
     const box = wordBoxes[wordIndex];
-    // Each word's own ink extent, not the whole line's -- a short word
-    // shouldn't highlight a tall neighbor's ascender/descender space.
     return { x0: box.left, x1: box.right, y0: box.top ?? line.top, y1: box.bottom ?? line.bottom };
   }
   const boxIndex = closestBoxByPosition(wordBoxes, wordIndex, tokenCount);
@@ -722,7 +733,7 @@ function renderWordSpans(container, note) {
     const lineDiv = document.createElement('div');
     lineDiv.className = 'text-line';
     const tokens = lineText.split(/\s+/).filter(Boolean);
-    lineTokenCounts.push(tokens.length);
+    lineTokenCounts.push(tokens.map((t) => t.length));
     if (tokens.length === 0) {
       lineDiv.innerHTML = '&nbsp;';
     } else {
