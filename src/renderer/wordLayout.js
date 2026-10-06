@@ -6,6 +6,8 @@
   const GAP_WEIGHT = 1.5; // how strongly a cut is pulled toward a wide blank gap
   const EDGE_MARGIN = 0.03; // fraction of image width counted as "at the edge"
   const EDGE_JUNK_MAX_WIDTH = 0.012; // an edge atom narrower than this is border junk
+  const SPECK_MAX_WIDTH = 0.009; // an atom smaller than this in BOTH directions is a speck, not a word
+  const SPECK_MAX_HEIGHT = 0.006;
 
   // wordLengths: character count of each word, in reading order (index 0 =
   // rightmost word). Returns one { x0, x1, y0, y1 } per word in that same
@@ -17,8 +19,12 @@
     // A thin sliver hugging the image edge is the page border or a scanner
     // shadow, not a word -- left in, it counts as a word and shifts every
     // real word one slot over.
+    // Isolated specks (a stray dot, a dust mark) are dropped too, so a word
+    // can never be matched to one.
     const usable = atoms.filter(
-      (at) => !(at.right - at.left < EDGE_JUNK_MAX_WIDTH && (at.left < EDGE_MARGIN || at.right > 1 - EDGE_MARGIN))
+      (at) =>
+        !(at.right - at.left < EDGE_JUNK_MAX_WIDTH && (at.left < EDGE_MARGIN || at.right > 1 - EDGE_MARGIN)) &&
+        !(at.right - at.left < SPECK_MAX_WIDTH && at.bottom - at.top < SPECK_MAX_HEIGHT)
     );
     if (usable.length === 0) return null;
 

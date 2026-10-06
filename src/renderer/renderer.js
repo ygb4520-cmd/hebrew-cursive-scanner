@@ -661,6 +661,13 @@ async function confirmDelete(id) {
 const MIN_ZOOM = 1;
 const MAX_ZOOM = 6;
 
+function isMergedLine(lineBoxes, lineIndex) {
+  const heights = lineBoxes.map((l) => l.bottom - l.top).sort((a, b) => a - b);
+  const median = heights[Math.floor(heights.length / 2)];
+  const line = lineBoxes[lineIndex];
+  return line.bottom - line.top > median * 1.8;
+}
+
 function computeHighlightBox(note, lineIndex, wordIndex, lineTokenLengths) {
   const lineBoxes = note.lineBoxes;
   if (!lineBoxes || !lineBoxes[lineIndex]) return null;
@@ -673,11 +680,21 @@ function computeHighlightBox(note, lineIndex, wordIndex, lineTokenLengths) {
     return { x0: 0, x1: 1, y0: line.top, y1: line.bottom };
   }
 
+  // A line far taller than its neighbors is really several text lines the
+  // line finder merged together -- word boxes along one horizontal strip
+  // can't be right there, so highlight the whole band instead of guessing.
+  if (isMergedLine(lineBoxes, lineIndex)) {
+    return { x0: 0, x1: 1, y0: line.top, y1: line.bottom };
+  }
+
   // Newer notes carry the raw ink pieces; group them into exactly one box
   // per transcribed word (see wordLayout.js).
   if (line.atoms && line.atoms.length > 0) {
     const boxes = window.WordLayout.layoutWords(line.atoms, wordLengths, line.wordPadding || 0);
-    if (boxes && boxes[wordIndex]) return boxes[wordIndex];
+    const box = boxes && boxes[wordIndex];
+    // A box this small is a misplaced speck, not a word.
+    if (box && box.x1 - box.x0 >= 0.008 && box.y1 - box.y0 >= 0.006) return box;
+    return { x0: 0, x1: 1, y0: line.top, y1: line.bottom };
   }
 
   // Older notes (saved before atoms existed): the earlier blob-matching.
