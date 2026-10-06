@@ -527,13 +527,17 @@ const VISION_MODEL = 'gemini-3.5-flash-lite';
 // Overlapping vision boxes that overlap by more than this fraction of the
 // shorter box are treated as one duplicated detection and merged.
 const MAX_SPLIT_OVERLAP_FRACTION = 0.6;
+const MAX_GOOD_MEDIAN_HEIGHT_FRACTION = 0.05; // median line taller than 5% of the page means blocks, not lines
+const FULL_PAGE_ATTEMPTS = 2;
+const STRIP_COUNT = 3;
+const STRIP_OVERLAP_FRACTION = 0.15;
 
 const VISION_PROMPT = `Detect every individual handwritten region of text in this image of a page of handwritten notes, in top-to-bottom reading order.
 
 Return ONLY a JSON array (no other text, no markdown fences). Each element must have EXACTLY these three keys and no others:
 {"box_2d": [ymin, xmin, ymax, xmax], "n": <number>, "kind": <one of "line", "heading", "crossed_out">}
 
-- "line": a normal continuous line of the main running text.
+- "line": ONE single physical line of the main running text. Each box must cover exactly one line (usually only a few percent of the page height) -- never a paragraph or a block of several lines.
 - "heading": a short topic header/title/label marking a new section or subject -- NOT part of the main running sentence, often visually set apart (own line, margin, underlined, etc).
 - "crossed_out": text the writer struck through, scribbled out, or otherwise marked as replaced/abandoned -- content that should NOT be read as part of the final text.
 
@@ -599,6 +603,115 @@ async function detectLinesWithRetry(apiKey, fallbackApiKey, image) {
   }
 }
 
+
+// One vision call over a horizontal region of the page (the whole page, or a
+// strip of it). Returns [top, bottom] page-pixel pairs, or null on failure.
+async function detectBandsInRegion(jpegBuffer, regionTop, regionHeight, pageWidth, pageHeight, apiKey, fallbackApiKey) {
+  let responseText;
+  try {
+    const regionJpeg =
+      regionHeight >= pageHeight
+        ? jpegBuffer
+        : await sharp(jpegBuffer)
+            .extract({ left: 0, top: regionTop, width: pageWidth, height: regionHeight })
+            .jpeg({ quality: 90 })
+            .toBuffer();
+    const image = { mimeType: 'image/jpeg', data: regionJpeg.toString('base64') };
+    responseText = await detectLinesWithRetry(apiKey, fallbackApiKey, image);
+  } catch {
+    return null;
+  }
+  return parseVisionEntries(responseText)
+    .filter((e) => e.kind !== 'crossed_out' && Array.isArray(e.box_2d) && e.box_2d.length === 4)
+    .map((e) => {
+      const [ymin, , ymax] = e.box_2d;
+      const top = regionTop + Math.max(0, Math.round((ymin / 1000) * regionHeight));
+      const bottom = Math.min(pageHeight - 1, regionTop + Math.round((ymax / 1000) * regionHeight));
+      return [top, bottom];
+    })
+    .filter(([top, bottom]) => bottom > top)
+    .sort((a, b) => a[0] - b[0]);
+}
+
+// Slanted lines make neighboring boxes overlap vertically, so overlapping
+// boxes are usually two distinct lines, not one -- split the overlap at its
+// midpoint. Only a box that's mostly inside the previous one (a duplicate
+// detection) or would be squeezed to nothing is merged.
+function resolveBandOverlaps(sortedBands) {
+  const rawBands = [];
+  for (const band of sortedBands) {
+    const last = rawBands[rawBands.length - 1];
+    if (!last || band[0] > last[1]) {
+      rawBands.push([...band]);
+      continue;
+    }
+    const overlap = last[1] - band[0] + 1;
+    const smallerHeight = Math.min(last[1] - last[0] + 1, band[1] - band[0] + 1);
+    const mid = Math.floor((band[0] + last[1]) / 2);
+    const squeezed = mid <= last[0] || mid + 1 >= band[1];
+    if (overlap > smallerHeight * MAX_SPLIT_OVERLAP_FRACTION || squeezed || band[1] <= last[1]) {
+      last[1] = Math.max(last[1], band[1]);
+    } else {
+      last[1] = mid;
+      rawBands.push([mid + 1, band[1]]);
+    }
+  }
+  return rawBands;
+}
+
+// Lower is better. A good result is many lines of small, even height; the
+// failure seen live was the model returning a handful of paragraph-sized
+// blocks (8 "lines" on a page of ~28) that no word-level logic can recover.
+function bandsBadness(rawBands, pageHeight) {
+  if (!rawBands || rawBands.length < 2) return Infinity;
+  const heights = rawBands.map(([t, b]) => (b - t + 1) / pageHeight).sort((a, b) => a - b);
+  const median = heights[Math.floor(heights.length / 2)];
+  const tall = heights.filter((h) => h > median * 2.2).length;
+  return median * 100 + tall * 2;
+}
+
+function bandsAreGood(rawBands, pageHeight) {
+  if (!rawBands || rawBands.length < 2) return false;
+  const heights = rawBands.map(([t, b]) => (b - t + 1) / pageHeight).sort((a, b) => a - b);
+  const median = heights[Math.floor(heights.length / 2)];
+  const tall = heights.filter((h) => h > median * 2.2).length;
+  return median <= MAX_GOOD_MEDIAN_HEIGHT_FRACTION && tall <= Math.max(2, rawBands.length * 0.15);
+}
+
+// Detects line bands, re-checking its own result: a coarse answer (blocks
+// instead of lines) is retried on the whole page, then redone on overlapping
+// horizontal strips, where the model sees the handwriting at higher effective
+// resolution. Returns the best result found, or null if every attempt failed.
+async function detectBandsWithQualityChecks(jpegBuffer, pageHeight, pageWidth, apiKey, fallbackApiKey) {
+  let best = null;
+  const consider = (sortedBands) => {
+    if (!sortedBands) return;
+    const resolved = resolveBandOverlaps(sortedBands);
+    if (!best || bandsBadness(resolved, pageHeight) < bandsBadness(best, pageHeight)) best = resolved;
+  };
+
+  for (let attempt = 0; attempt < FULL_PAGE_ATTEMPTS; attempt++) {
+    consider(await detectBandsInRegion(jpegBuffer, 0, pageHeight, pageWidth, pageHeight, apiKey, fallbackApiKey));
+    if (bandsAreGood(best, pageHeight)) return best;
+  }
+
+  const stripHeight = Math.ceil(pageHeight / (STRIP_COUNT - (STRIP_COUNT - 1) * STRIP_OVERLAP_FRACTION));
+  const step = Math.round(stripHeight * (1 - STRIP_OVERLAP_FRACTION));
+  const stripBands = [];
+  let anyStrip = false;
+  for (let i = 0; i < STRIP_COUNT; i++) {
+    const top = Math.min(i * step, Math.max(0, pageHeight - stripHeight));
+    const regionHeight = Math.min(stripHeight, pageHeight - top);
+    const found = await detectBandsInRegion(jpegBuffer, top, regionHeight, pageWidth, pageHeight, apiKey, fallbackApiKey);
+    if (found) {
+      anyStrip = true;
+      stripBands.push(...found);
+    }
+  }
+  if (anyStrip) consider(stripBands.sort((a, b) => a[0] - b[0]));
+  return best;
+}
+
 // Alternative to segmentIntoLines: asks Gemini's vision model to directly
 // detect each handwritten line's bounding box and classify it (normal
 // line / heading / crossed-out), instead of computing lines from ink-pixel
@@ -629,62 +742,16 @@ async function segmentIntoLinesViaVision(buffer, apiKey, fallbackApiKey) {
     EDGE_SMOOTH_WINDOW
   );
 
-  let responseText;
-  try {
-    const rotatedJpeg = await sharp(buffer).rotate().jpeg({ quality: 90 }).toBuffer();
-    const image = { mimeType: 'image/jpeg', data: rotatedJpeg.toString('base64') };
-    responseText = await detectLinesWithRetry(apiKey, fallbackApiKey, image);
-  } catch {
-    return null;
-  }
-
   // Everything from here on is our own parsing/geometry over whatever the
-  // model handed back -- wrapped so a bug or an unexpected shape in that
+  // model hands back -- wrapped so a bug or an unexpected shape in that
   // response (seen live: overlapping raw boxes produced a negative-height
   // crop that crashed the import outright) degrades to "fall back to
   // pixel-math" like this function promises, instead of taking the import
   // down with it.
   try {
-    const entries = parseVisionEntries(responseText);
-
-    const sortedBands = entries
-      .filter((e) => e.kind !== 'crossed_out' && Array.isArray(e.box_2d) && e.box_2d.length === 4)
-      .map((e) => {
-        const [ymin, , ymax] = e.box_2d;
-        const top = Math.max(0, Math.round((ymin / 1000) * height));
-        const bottom = Math.min(height - 1, Math.round((ymax / 1000) * height));
-        return [top, bottom];
-      })
-      .filter(([top, bottom]) => bottom > top)
-      .sort((a, b) => a[0] - b[0]);
-
-    // Unlike the pixel-math bands (which are already guaranteed
-    // non-overlapping by construction), the model can hand back two boxes
-    // that already overlap pre-padding -- the overlap-fix's midpoint math
-    // below assumes bands don't overlap *before* padding, only after.
-    // Merge any that do first.
-    // Slanted lines make neighboring boxes overlap vertically, so overlapping
-    // boxes are usually two distinct lines, not one -- split the overlap at
-    // its midpoint. Only a box that's mostly inside the previous one (a
-    // duplicate detection) or would be squeezed to nothing is merged.
-    const rawBands = [];
-    for (const band of sortedBands) {
-      const last = rawBands[rawBands.length - 1];
-      if (!last || band[0] > last[1]) {
-        rawBands.push([...band]);
-        continue;
-      }
-      const overlap = last[1] - band[0] + 1;
-      const smallerHeight = Math.min(last[1] - last[0] + 1, band[1] - band[0] + 1);
-      const mid = Math.floor((band[0] + last[1]) / 2);
-      const squeezed = mid <= last[0] || mid + 1 >= band[1];
-      if (overlap > smallerHeight * MAX_SPLIT_OVERLAP_FRACTION || squeezed || band[1] <= last[1]) {
-        last[1] = Math.max(last[1], band[1]);
-      } else {
-        last[1] = mid;
-        rawBands.push([mid + 1, band[1]]);
-      }
-    }
+    const rotatedJpeg = await sharp(buffer).rotate().jpeg({ quality: 90 }).toBuffer();
+    const rawBands = await detectBandsWithQualityChecks(rotatedJpeg, height, width, apiKey, fallbackApiKey);
+    if (!rawBands) return null;
 
     if (rawBands.length < 2) return null;
 
