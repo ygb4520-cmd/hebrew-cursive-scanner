@@ -524,6 +524,9 @@ async function segmentIntoLines(buffer) {
 }
 
 const VISION_MODEL = 'gemini-3.5-flash-lite';
+// Overlapping vision boxes that overlap by more than this fraction of the
+// shorter box are treated as one duplicated detection and merged.
+const MAX_SPLIT_OVERLAP_FRACTION = 0.6;
 
 const VISION_PROMPT = `Detect every individual handwritten region of text in this image of a page of handwritten notes, in top-to-bottom reading order.
 
@@ -660,13 +663,26 @@ async function segmentIntoLinesViaVision(buffer, apiKey, fallbackApiKey) {
     // that already overlap pre-padding -- the overlap-fix's midpoint math
     // below assumes bands don't overlap *before* padding, only after.
     // Merge any that do first.
+    // Slanted lines make neighboring boxes overlap vertically, so overlapping
+    // boxes are usually two distinct lines, not one -- split the overlap at
+    // its midpoint. Only a box that's mostly inside the previous one (a
+    // duplicate detection) or would be squeezed to nothing is merged.
     const rawBands = [];
     for (const band of sortedBands) {
       const last = rawBands[rawBands.length - 1];
-      if (last && band[0] <= last[1]) {
+      if (!last || band[0] > last[1]) {
+        rawBands.push([...band]);
+        continue;
+      }
+      const overlap = last[1] - band[0] + 1;
+      const smallerHeight = Math.min(last[1] - last[0] + 1, band[1] - band[0] + 1);
+      const mid = Math.floor((band[0] + last[1]) / 2);
+      const squeezed = mid <= last[0] || mid + 1 >= band[1];
+      if (overlap > smallerHeight * MAX_SPLIT_OVERLAP_FRACTION || squeezed || band[1] <= last[1]) {
         last[1] = Math.max(last[1], band[1]);
       } else {
-        rawBands.push([...band]);
+        last[1] = mid;
+        rawBands.push([mid + 1, band[1]]);
       }
     }
 
